@@ -123,7 +123,6 @@ int s2n_free(struct s2n_blob *b)
     int munlock_rc = b->mlocked ? munlock(b->data, b->size) : 0;
     free(b->data);
     *b = (struct s2n_blob) {0};
-
     S2N_ERROR_IF(munlock_rc < 0, S2N_ERR_MUNLOCK);
     GUARD(zero_rc);
     return S2N_SUCCESS;
