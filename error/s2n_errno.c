@@ -18,12 +18,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <execinfo.h>
 #include "error/s2n_errno.h"
 
 #include <s2n.h>
 #include "utils/s2n_map.h"
 #include "utils/s2n_safety.h"
+
+#if S2N_HAVE_EXECINFO
+#   include <execinfo.h>
+#endif
 
 __thread int s2n_errno;
 __thread const char *s2n_debug_str;
@@ -35,11 +38,13 @@ static const char *no_such_error = "Internal s2n error";
  * Define error entries with descriptions in this macro once
  * to generate code in next 2 following functions.
  */
+/* clang-format off */
 #define ERR_ENTRIES(ERR_ENTRY) \
     ERR_ENTRY(S2N_ERR_OK, "no error") \
     ERR_ENTRY(S2N_ERR_IO, "underlying I/O operation failed, check system errno") \
     ERR_ENTRY(S2N_ERR_CLOSED, "connection is closed") \
-    ERR_ENTRY(S2N_ERR_BLOCKED, "underlying I/O operation would block") \
+    ERR_ENTRY(S2N_ERR_IO_BLOCKED, "underlying I/O operation would block") \
+    ERR_ENTRY(S2N_ERR_ASYNC_BLOCKED, "blocked on external async function invocation") \
     ERR_ENTRY(S2N_ERR_ALERT, "TLS alert received") \
     ERR_ENTRY(S2N_ERR_ENCRYPT, "error encrypting data") \
     ERR_ENTRY(S2N_ERR_DECRYPT, "error decrypting data") \
@@ -99,6 +104,7 @@ static const char *no_such_error = "Internal s2n error";
     ERR_ENTRY(S2N_ERR_NOMEM, "no memory") \
     ERR_ENTRY(S2N_ERR_NULL, "NULL pointer encountered") \
     ERR_ENTRY(S2N_ERR_SAFETY, "a safety check failed") \
+    ERR_ENTRY(S2N_ERR_INITIALIZED, "s2n is initialized") \
     ERR_ENTRY(S2N_ERR_NOT_INITIALIZED, "s2n not initialized") \
     ERR_ENTRY(S2N_ERR_RANDOM_UNINITIALIZED, "s2n entropy not initialized") \
     ERR_ENTRY(S2N_ERR_OPEN_RANDOM, "error opening urandom") \
@@ -150,10 +156,16 @@ static const char *no_such_error = "Internal s2n error";
     ERR_ENTRY(S2N_ERR_RECV_STUFFER_FROM_CONN, "Error receiving stuffer from connection") \
     ERR_ENTRY(S2N_ERR_SEND_STUFFER_TO_CONN, "Error sending stuffer to connection") \
     ERR_ENTRY(S2N_ERR_PRECONDITION_VIOLATION, "Precondition violation") \
+    ERR_ENTRY(S2N_ERR_POSTCONDITION_VIOLATION, "Postcondition violation") \
     ERR_ENTRY(S2N_ERR_INTEGER_OVERFLOW, "Integer overflow violation") \
     ERR_ENTRY(S2N_ERR_ARRAY_INDEX_OOB, "Array index out of bounds") \
     ERR_ENTRY(S2N_ERR_FREE_STATIC_BLOB, "Cannot free a static blob") \
     ERR_ENTRY(S2N_ERR_RESIZE_STATIC_BLOB, "Cannot resize a static blob") \
+    ERR_ENTRY(S2N_ERR_NO_AVAILABLE_BORINGSSL_API, "BoringSSL does not support this API") \
+    ERR_ENTRY(S2N_ERR_RECORD_LENGTH_TOO_LARGE, "Record length exceeds protocol version maximum") \
+    ERR_ENTRY(S2N_ERR_SET_DUPLICATE_VALUE, "Set already contains the provided value") \
+    ERR_ENTRY(S2N_ERR_ASYNC_CALLBACK_FAILED, "Callback associated with async private keys function has failed") \
+    ERR_ENTRY(S2N_ERR_ASYNC_MORE_THAN_ONE, "Only one asynchronous operation can be in-progress at the same time") \
     ERR_ENTRY(S2N_ERR_NO_ALERT, "No Alert present") \
     ERR_ENTRY(S2N_ERR_CLIENT_MODE, "operation not allowed in client mode") \
     ERR_ENTRY(S2N_ERR_CLIENT_MODE_DISABLED, "client connections not allowed") \
@@ -195,6 +207,7 @@ static const char *no_such_error = "Internal s2n error";
     ERR_ENTRY(S2N_ERR_INVALID_DYNAMIC_THRESHOLD, "invalid dynamic record threshold") \
     ERR_ENTRY(S2N_ERR_INVALID_ARGUMENT, "invalid argument provided into a function call") \
     ERR_ENTRY(S2N_ERR_NOT_IN_UNIT_TEST, "Illegal configuration, can only be used during unit tests") \
+    ERR_ENTRY(S2N_ERR_NOT_IN_TEST, "Illegal configuration, can only be used during unit or integration tests") \
     ERR_ENTRY(S2N_ERR_UNSUPPORTED_CPU, "Unsupported CPU architecture") \
     ERR_ENTRY(S2N_ERR_SESSION_ID_TOO_SHORT, "Session id is too short") \
     ERR_ENTRY(S2N_ERR_CONNECTION_CACHING_DISALLOWED, "This connection is not allowed to be cached") \
@@ -202,6 +215,27 @@ static const char *no_such_error = "Internal s2n error";
     ERR_ENTRY(S2N_ERR_OCSP_NOT_SUPPORTED, "OCSP stapling was requested, but is not supported") \
     ERR_ENTRY(S2N_ERR_INVALID_SIGNATURE_ALGORITHMS_PREFERENCES, "Invalid signature algorithms preferences version") \
     ERR_ENTRY(S2N_ERR_PQ_KEMS_DISALLOWED_IN_FIPS, "PQ KEMs are disallowed while in FIPS mode") \
+    ERR_ENTRY(S2N_RSA_PSS_NOT_SUPPORTED, "RSA-PSS signing not supported by underlying libcrypto implementation") \
+    ERR_ENTRY(S2N_ERR_MAX_INNER_PLAINTEXT_SIZE, "Inner plaintext size exceeds limit") \
+    ERR_ENTRY(S2N_ERR_INVALID_ECC_PREFERENCES, "Invalid ecc curves preferences version") \
+    ERR_ENTRY(S2N_ERR_RECORD_STUFFER_SIZE, "Record stuffer out of space") \
+    ERR_ENTRY(S2N_ERR_FRAGMENT_LENGTH_TOO_SMALL, "Fragment length is too small") \
+    ERR_ENTRY(S2N_ERR_FRAGMENT_LENGTH_TOO_LARGE, "Fragment length is too large") \
+    ERR_ENTRY(S2N_ERR_RECORD_STUFFER_NEEDS_DRAINING, "Record stuffer needs to be drained first") \
+    ERR_ENTRY(S2N_ERR_UNSUPPORTED_EXTENSION, "Illegal use of a known, supported extension") \
+    ERR_ENTRY(S2N_ERR_MISSING_EXTENSION, "Mandatory extension not received") \
+    ERR_ENTRY(S2N_ERR_DUPLICATE_EXTENSION, "Extension block contains two or more extensions of the same type") \
+    ERR_ENTRY(S2N_ERR_INVALID_SECURITY_POLICY, "Invalid security policy") \
+    ERR_ENTRY(S2N_ERR_INVALID_KEM_PREFERENCES, "Invalid kem preferences version") \
+    ERR_ENTRY(S2N_ERR_INVALID_PARSED_EXTENSIONS, "Invalid parsed extension data") \
+    ERR_ENTRY(S2N_ERR_ASYNC_ALREADY_PERFORMED, "Async operation was already performed, cannot perfom it again") \
+    ERR_ENTRY(S2N_ERR_ASYNC_NOT_PERFORMED, "Async operation is not performed, cannot apply its result") \
+    ERR_ENTRY(S2N_ERR_ASYNC_WRONG_CONNECTION, "Async private key operation can only be consumed by connection which initiated it") \
+    ERR_ENTRY(S2N_ERR_ASYNC_APPLY_WHILE_INVOKING, "Async private key operation cannot consumed inside async pkey callback") \
+    ERR_ENTRY(S2N_ERR_ASYNC_ALREADY_APPLIED, "Async operation was already applied to connection, cannot apply it again") \
+    ERR_ENTRY(S2N_ERR_INVALID_HELLO_RETRY, "Invalid hello retry request") \
+
+/* clang-format on */
 
 #define ERR_STR_CASE(ERR, str) case ERR: return str;
 #define ERR_NAME_CASE(ERR, str) case ERR: return #ERR;
@@ -285,7 +319,7 @@ int s2n_error_get_type(int error)
 
 
 /* https://www.gnu.org/software/libc/manual/html_node/Backtraces.html */
-static bool s_s2n_stack_traces_enabled;
+static bool s_s2n_stack_traces_enabled = false;
 
 bool s2n_stack_traces_enabled()
 {
@@ -297,6 +331,8 @@ int s2n_stack_traces_enabled_set(bool newval)
     s_s2n_stack_traces_enabled = newval;
     return S2N_SUCCESS;
 }
+
+#ifdef S2N_HAVE_EXECINFO
 
 #define MAX_BACKTRACE_DEPTH 20
 __thread struct s2n_stacktrace tl_stacktrace = {0};
@@ -346,3 +382,30 @@ int s2n_print_stacktrace(FILE *fptr)
     }
     return S2N_SUCCESS;
 }
+
+#else /* !S2N_HAVE_EXECINFO */
+int s2n_free_stacktrace(void)
+{
+    S2N_ERROR(S2N_ERR_UNIMPLEMENTED);
+}
+
+int s2n_calculate_stacktrace(void)
+{
+    if (!s_s2n_stack_traces_enabled)
+    {
+        return S2N_SUCCESS;
+    }
+
+    S2N_ERROR(S2N_ERR_UNIMPLEMENTED);
+}
+
+int s2n_get_stacktrace(struct s2n_stacktrace *trace)
+{
+    S2N_ERROR(S2N_ERR_UNIMPLEMENTED);
+}
+
+int s2n_print_stacktrace(FILE *fptr)
+{
+    S2N_ERROR(S2N_ERR_UNIMPLEMENTED);
+}
+#endif /* S2N_HAVE_EXECINFO */

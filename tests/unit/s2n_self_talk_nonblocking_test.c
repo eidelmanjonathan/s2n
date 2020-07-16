@@ -29,8 +29,9 @@
 
 #include "tls/s2n_connection.h"
 #include "tls/s2n_handshake.h"
+#include "tls/s2n_tls13.h"
 
-int mock_client(struct s2n_test_piped_io *piped_io, uint8_t *expected_data, uint32_t size)
+int mock_client(struct s2n_test_io_pair *io_pair, uint8_t *expected_data, uint32_t size)
 {
     uint8_t *buffer = malloc(size);
     uint8_t *ptr = buffer;
@@ -47,7 +48,7 @@ int mock_client(struct s2n_test_piped_io *piped_io, uint8_t *expected_data, uint
     s2n_config_disable_x509_verification(client_config);
     s2n_connection_set_config(client_conn, client_config);
 
-    s2n_connection_set_piped_io(client_conn, piped_io);
+    s2n_connection_set_io_pair(client_conn, io_pair);
 
     result = s2n_negotiate(client_conn, &blocked);
     if (result < 0) {
@@ -85,7 +86,7 @@ int mock_client(struct s2n_test_piped_io *piped_io, uint8_t *expected_data, uint
     return 0;
 }
 
-int mock_client_iov(struct s2n_test_piped_io *piped_io, struct iovec *iov, uint32_t iov_size)
+int mock_client_iov(struct s2n_test_io_pair *io_pair, struct iovec *iov, uint32_t iov_size)
 {
     struct s2n_connection *client_conn;
     struct s2n_config *client_config;
@@ -107,7 +108,7 @@ int mock_client_iov(struct s2n_test_piped_io *piped_io, struct iovec *iov, uint3
     s2n_config_disable_x509_verification(client_config);
     s2n_connection_set_config(client_conn, client_config);
 
-    s2n_connection_set_piped_io(client_conn, piped_io);
+    s2n_connection_set_io_pair(client_conn, io_pair);
 
     result = s2n_negotiate(client_conn, &blocked);
     if (result < 0) {
@@ -157,13 +158,16 @@ int mock_client_iov(struct s2n_test_piped_io *piped_io, struct iovec *iov, uint3
     return 0;
 }
 
-int test_count = 0;
 char *cert_chain_pem;
 char *private_key_pem;
 char *dhparams_pem;
 
-int test_send(int use_iov)
+int test_send(int use_tls13, int use_iov, int prefer_throughput)
 {
+    if (use_tls13) {
+        EXPECT_SUCCESS(s2n_enable_tls13());
+    }
+
     struct s2n_connection *conn;
     struct s2n_config *config;
     s2n_blocked_status blocked;
@@ -179,16 +183,37 @@ int test_send(int use_iov)
     EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key));
     EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_DHPARAMS, dhparams_pem, S2N_MAX_TEST_PEM_SIZE));
     EXPECT_SUCCESS(s2n_config_add_dhparams(config, dhparams_pem));
+    if (use_tls13) {
+        EXPECT_SUCCESS(s2n_config_set_cipher_preferences(config, "default_tls13"));
+    }
 
     /* Get some random data to send/receive */
     uint32_t data_size = 0;
     DEFER_CLEANUP(struct s2n_blob blob = {0}, s2n_free);
-    int iov_payload_size = 8, iov_size = 16;
+
+    /* These numbers are chosen so that some of the payload is bigger
+     * than max TLS1.3 record size (2**14 + 1), which is needed to validate
+     * that we handle record sizing correctly.
+     *  (see https://github.com/awslabs/s2n/pull/1780).
+     *
+     * Note that for each iov in the list, the payload size is doubled
+     * to ensure the implementation handles various lengths.
+     *
+     * With the current values, it will include
+     * * 8192 bytes
+     * * 16384 bytes
+     * * 32768 bytes
+     * * 65536 bytes
+     * * 131072 bytes
+     * * 262144 bytes
+     * * 524288 bytes */
+    int iov_payload_size = 8192, iov_size = 7;
+
     struct iovec* iov = NULL;
     if (!use_iov) {
         data_size = 10000000;
         s2n_alloc(&blob, data_size);
-        EXPECT_SUCCESS(s2n_get_urandom_data(&blob));
+        EXPECT_OK(s2n_get_urandom_data(&blob));
     } else {
         iov = malloc(sizeof(*iov) * iov_size);
         data_size = 0;
@@ -196,40 +221,43 @@ int test_send(int use_iov)
             struct s2n_blob blob_local;
             iov[i].iov_base = blob_local.data = malloc(iov_payload_size);
             iov[i].iov_len = blob_local.size = iov_payload_size;
-            EXPECT_SUCCESS(s2n_get_urandom_data(&blob));
+            EXPECT_OK(s2n_get_urandom_data(&blob));
             data_size += iov_payload_size;
         }
     }
 
     /* Create a pipe */
-    struct s2n_test_piped_io piped_io;
-    EXPECT_SUCCESS(s2n_piped_io_init(&piped_io));
+    struct s2n_test_io_pair io_pair;
+    EXPECT_SUCCESS(s2n_io_pair_init(&io_pair));
 
     /* Create a child process */
     pid = fork();
     if (pid == 0) {
         /* This is the client process, close the server end of the pipe */
-        EXPECT_SUCCESS(s2n_piped_io_close_one_end(&piped_io, S2N_SERVER));
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
         /* Run the client */
-        const int client_rc = !use_iov ? mock_client(&piped_io, blob.data, data_size)
-            : mock_client_iov(&piped_io, iov, iov_size);
+        const int client_rc = !use_iov ? mock_client(&io_pair, blob.data, data_size)
+            : mock_client_iov(&io_pair, iov, iov_size);
 
-        EXPECT_SUCCESS(s2n_piped_io_close_one_end(&piped_io, S2N_CLIENT));
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_CLIENT));
         _exit(client_rc);
     }
 
     /* This is the server process, close the client end of the pipe */
-    EXPECT_SUCCESS(s2n_piped_io_close_one_end(&piped_io, S2N_CLIENT));
+    EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_CLIENT));
 
     EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
     EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
-    /* Use small records in order to have more chance fitting full record into pipe */
-    EXPECT_SUCCESS(s2n_connection_prefer_low_latency(conn));
+    if (prefer_throughput) {
+         EXPECT_SUCCESS(s2n_connection_prefer_throughput(conn));
+    } else {
+         EXPECT_SUCCESS(s2n_connection_prefer_low_latency(conn));
+    }
 
     /* Set up the connection to read from the fd */
-    EXPECT_SUCCESS(s2n_connection_set_piped_io(conn, &piped_io));
+    EXPECT_SUCCESS(s2n_connection_set_io_pair(conn, &io_pair));
 
     EXPECT_SUCCESS(s2n_connection_use_corked_io(conn));
 
@@ -240,8 +268,7 @@ int test_send(int use_iov)
     EXPECT_SUCCESS(kill(pid, SIGSTOP));
 
     /* Make our pipes non-blocking */
-    s2n_fd_set_non_blocking(piped_io.server_read);
-    s2n_fd_set_non_blocking(piped_io.server_write);
+    s2n_fd_set_non_blocking(io_pair.server);
 
     /* Try to all 10MB of data, should be enough to fill PIPEBUF, so
        we'll get blocked at some point */
@@ -272,8 +299,7 @@ int test_send(int use_iov)
     EXPECT_SUCCESS(kill(pid, SIGCONT));
 
     /* Make our sockets blocking again */
-    s2n_fd_set_blocking(piped_io.server_read);
-    s2n_fd_set_blocking(piped_io.server_write);
+    s2n_fd_set_blocking(io_pair.server);
 
     /* Actually send the remaining data */
     while (remaining) {
@@ -301,13 +327,17 @@ int test_send(int use_iov)
     EXPECT_EQUAL(status, 0);
     EXPECT_SUCCESS(s2n_config_free(config));
     EXPECT_SUCCESS(s2n_cert_chain_and_key_free(chain_and_key));
-    EXPECT_SUCCESS(s2n_piped_io_close_one_end(&piped_io, S2N_SERVER));
+    EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
     if (iov) {
         for (int i = 0; i < iov_size; i++) {
             free(iov[i].iov_base);
         }
         free(iov);
+    }
+
+    if (use_tls13) {
+        EXPECT_SUCCESS(s2n_disable_tls13());
     }
 
     return 0;
@@ -318,14 +348,21 @@ int main(int argc, char **argv)
     /* Ignore SIGPIPE */
     signal(SIGPIPE, SIG_IGN);
 
-#define test_count _test_count
     BEGIN_TEST();
-#undef test_count
     EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
     EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
     EXPECT_NOT_NULL(dhparams_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-    test_send(0);
-    test_send(1);
+
+    for (int use_tls13 = 0; use_tls13 < 2; use_tls13 ++) {
+        if (use_tls13 && !s2n_is_tls13_supported()) {
+            continue;
+        }
+        for (int use_iovec = 0; use_iovec < 2; use_iovec ++) {
+            for (int use_throughput = 0; use_throughput < 2; use_throughput ++) {
+                test_send(use_tls13, use_iovec, use_throughput);
+            }
+        }
+    }
     free(cert_chain_pem);
     free(private_key_pem);
     free(dhparams_pem);

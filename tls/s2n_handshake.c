@@ -27,32 +27,32 @@
 #include "utils/s2n_safety.h"
 #include "utils/s2n_map.h"
 
-int s2n_handshake_write_header(struct s2n_connection *conn, uint8_t message_type)
+int s2n_handshake_write_header(struct s2n_stuffer *out, uint8_t message_type)
 {
-    S2N_ERROR_IF(s2n_stuffer_data_available(&conn->handshake.io), S2N_ERR_HANDSHAKE_STATE);
+    S2N_ERROR_IF(s2n_stuffer_data_available(out), S2N_ERR_HANDSHAKE_STATE);
 
     /* Write the message header */
-    GUARD(s2n_stuffer_write_uint8(&conn->handshake.io, message_type));
+    GUARD(s2n_stuffer_write_uint8(out, message_type));
 
     /* Leave the length blank for now */
     uint16_t length = 0;
-    GUARD(s2n_stuffer_write_uint24(&conn->handshake.io, length));
+    GUARD(s2n_stuffer_write_uint24(out, length));
 
     return 0;
 }
 
-int s2n_handshake_finish_header(struct s2n_connection *conn)
+int s2n_handshake_finish_header(struct s2n_stuffer *out)
 {
-    uint16_t length = s2n_stuffer_data_available(&conn->handshake.io);
+    uint16_t length = s2n_stuffer_data_available(out);
     S2N_ERROR_IF(length < TLS_HANDSHAKE_HEADER_LENGTH, S2N_ERR_SIZE_MISMATCH);
 
     uint16_t payload = length - TLS_HANDSHAKE_HEADER_LENGTH;
 
     /* Write the message header */
-    GUARD(s2n_stuffer_rewrite(&conn->handshake.io));
-    GUARD(s2n_stuffer_skip_write(&conn->handshake.io, 1));
-    GUARD(s2n_stuffer_write_uint24(&conn->handshake.io, payload));
-    GUARD(s2n_stuffer_skip_write(&conn->handshake.io, payload));
+    GUARD(s2n_stuffer_rewrite(out));
+    GUARD(s2n_stuffer_skip_write(out, 1));
+    GUARD(s2n_stuffer_write_uint24(out, payload));
+    GUARD(s2n_stuffer_skip_write(out, payload));
 
     return 0;
 }
@@ -68,33 +68,64 @@ int s2n_handshake_parse_header(struct s2n_connection *conn, uint8_t * message_ty
     return 0;
 }
 
-int s2n_handshake_get_hash_state(struct s2n_connection *conn, s2n_hash_algorithm hash_alg, struct s2n_hash_state *hash_state)
+static int s2n_handshake_get_hash_state_ptr(struct s2n_connection *conn, s2n_hash_algorithm hash_alg, struct s2n_hash_state **hash_state)
 {
     switch (hash_alg) {
     case S2N_HASH_MD5:
-        *hash_state = conn->handshake.md5;
+        *hash_state = &conn->handshake.md5;
         break;
     case S2N_HASH_SHA1:
-        *hash_state = conn->handshake.sha1;
+        *hash_state = &conn->handshake.sha1;
         break;
     case S2N_HASH_SHA224:
-        *hash_state = conn->handshake.sha224;
+        *hash_state = &conn->handshake.sha224;
         break;
     case S2N_HASH_SHA256:
-        *hash_state = conn->handshake.sha256;
+        *hash_state = &conn->handshake.sha256;
         break;
     case S2N_HASH_SHA384:
-        *hash_state = conn->handshake.sha384;
+        *hash_state = &conn->handshake.sha384;
         break;
     case S2N_HASH_SHA512:
-        *hash_state = conn->handshake.sha512;
+        *hash_state = &conn->handshake.sha512;
         break;
     case S2N_HASH_MD5_SHA1:
-        *hash_state = conn->handshake.md5_sha1;
+        *hash_state = &conn->handshake.md5_sha1;
         break;
     default:
         S2N_ERROR(S2N_ERR_HASH_INVALID_ALGORITHM);
+        break;
     }
+
+    return 0;
+}
+
+int s2n_handshake_reset_hash_state(struct s2n_connection *conn, s2n_hash_algorithm hash_alg)
+{
+    struct s2n_hash_state *hash_state_ptr = NULL;
+    GUARD(s2n_handshake_get_hash_state_ptr(conn, hash_alg, &hash_state_ptr));
+
+    GUARD(s2n_hash_reset(hash_state_ptr));
+
+    return 0;
+}
+
+/* Copy the current hash state into the caller supplied pointer.
+ * NOTE: If the underlying digest implementation is using the EVP API
+ * then a pointer to the EVP ctx and md is copied. So you are actually
+ * taking a reference, not a value.
+ * Before using the hash_state returned by this function you must
+ * use s2n_hash_copy() to avoid modifying the underlying value.
+ */
+int s2n_handshake_get_hash_state(struct s2n_connection *conn, s2n_hash_algorithm hash_alg, struct s2n_hash_state *hash_state)
+{
+    notnull_check(hash_state);
+
+    struct s2n_hash_state *hash_state_ptr = NULL;
+    GUARD(s2n_handshake_get_hash_state_ptr(conn, hash_alg, &hash_state_ptr));
+
+    *hash_state = *hash_state_ptr;
+
     return 0;
 }
 
@@ -201,13 +232,15 @@ int s2n_create_wildcard_hostname(struct s2n_stuffer *hostname_stuffer, struct s2
 
 static int s2n_find_cert_matches(struct s2n_map *domain_name_to_cert_map,
         struct s2n_blob *dns_name,
-        struct s2n_cert_chain_and_key *matches[S2N_AUTHENTICATION_METHOD_SENTINEL],
+        struct s2n_cert_chain_and_key *matches[S2N_CERT_TYPE_COUNT],
         uint8_t *match_exists)
 {
     struct s2n_blob map_value;
-    if (s2n_map_lookup(domain_name_to_cert_map, dns_name, &map_value) == 1) {
-        struct auth_method_to_cert_value *value = (void *) map_value.data;
-        for (int i = 0; i < S2N_AUTHENTICATION_METHOD_SENTINEL; i++) {
+    bool key_found = false;
+    GUARD_AS_POSIX(s2n_map_lookup(domain_name_to_cert_map, dns_name, &map_value, &key_found));
+    if (key_found) {
+        struct certs_by_type *value = (void *) map_value.data;
+        for (int i = 0; i < S2N_CERT_TYPE_COUNT; i++) {
             matches[i] = value->certs[i];
         }
         *match_exists = 1;
@@ -277,3 +310,20 @@ int s2n_conn_find_name_matching_certs(struct s2n_connection *conn)
     return 0;
 }
 
+/* Find the optimal certificate of a specific type.
+ * The priority of set of certificates to choose from:
+ * 1. Certificates that match the client's ServerName extension.
+ * 2. Default certificates
+ */
+struct s2n_cert_chain_and_key *s2n_get_compatible_cert_chain_and_key(struct s2n_connection *conn, const s2n_pkey_type cert_type)
+{
+    if (conn->handshake_params.exact_sni_match_exists) {
+        /* This may return NULL if there was an SNI match, but not a match the cipher_suite's authentication type. */
+        return conn->handshake_params.exact_sni_matches[cert_type];
+    } if (conn->handshake_params.wc_sni_match_exists) {
+        return conn->handshake_params.wc_sni_matches[cert_type];
+    } else {
+        /* We don't have any name matches. Use the default certificate that works with the key type. */
+        return conn->config->default_certs_by_type.certs[cert_type];
+    }
+}

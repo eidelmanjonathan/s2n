@@ -21,7 +21,7 @@ BATCHFLAGS ?= \
 	--batchpkg $(BATCHPKG) \
 	--blddir $(SRCDIR) \
 	--bucket $(BUCKET) \
-	--cbmcflags $(call encode_options,$(CBMCFLAGS)) \
+	--cbmcflags $(call encode_options,$(CHECKFLAGS)) \
 	--cbmcpkg $(CBMCPKG) \
 	--coverage-memory $(COVMEM) \
 	--goto gotos/$(ENTRY).goto \
@@ -50,10 +50,10 @@ define yaml_encode_options
        "$(shell echo $(1) | sed 's/ ,/ /g' | sed 's/ /;/g')"
 endef
 
-$(ENTRY).yaml: 
+$(ENTRY).yaml:
 	echo 'batchpkg: $(BATCHPKG)' > $@
 	echo 'build: true' >> $@
-	echo 'cbmcflags: $(call yaml_encode_options,$(CBMCFLAGS))' >> $@
+	echo 'cbmcflags: $(call yaml_encode_options,$(CHECKFLAGS) $(CBMCFLAGS))' >> $@
 	echo 'cbmcpkg: $(CBMCPKG)' >> $@
 	echo 'coverage_memory: $(COVMEM)' >> $@
 	echo 'expected: "SUCCESSFUL"' >> $@
@@ -64,11 +64,17 @@ $(ENTRY).yaml:
 
 batch-yaml: $(ENTRY).yaml Makefile
 
-cbmc-batch.yaml: 
-	echo 'cbmcflags: $(strip $(call yaml_encode_options,$(CBMCFLAGS)))' > $@
+cbmc-batch.yaml:
+	echo 'cbmcflags: $(strip $(call yaml_encode_options,$(CHECKFLAGS) $(CBMCFLAGS)))' > $@
 	echo 'expected: "SUCCESSFUL"' >> $@
 	echo 'goto: gotos/$(ENTRY).goto' >> $@
 	echo 'jobos: ubuntu16' >> $@
+
+empty-cbmc-batch.yaml:
+	echo ':' > 'cbmc-batch.yaml'
+	echo '  This file marks this directory as containing a CBMC proof. This file' >> 'cbmc-batch.yaml'
+	echo '  is automatically clobbered in CI and replaced with parameters for' >> 'cbmc-batch.yaml'
+	echo '  running the proof.' >> 'cbmc-batch.yaml'
 
 ci-yaml: cbmc-batch.yaml Makefile
 

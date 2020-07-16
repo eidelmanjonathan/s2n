@@ -15,11 +15,24 @@
 
 #pragma once
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/uio.h>
 
 #include "utils/s2n_blob.h"
+
+#define S2N_MIN_STUFFER_GROWTH_IN_BYTES 1024
+
+/* Using a non-zero value
+ * (a) makes wiped data easy to see in the debugger
+ * (b) makes use of wiped data obvious since this is unlikely to be a valid bit pattern
+ */
+#define S2N_WIPE_PATTERN 'w'
+
+#define SIZEOF_IN_BITS( t ) (sizeof(t) * CHAR_BIT)
+
+#define SIZEOF_UINT24 3
 
 struct s2n_stuffer {
     /* The data for the s2n_stuffer */
@@ -36,7 +49,9 @@ struct s2n_stuffer {
     /* Is this stuffer growable? */
     unsigned int growable:1;
 
-    /* A growable stuffer can also be temporarily tainted */
+    /* Can this stuffer be safely resized?
+     * A growable stuffer can be temporarily tainted by a raw read/write,
+     * preventing it from resizing. */
     unsigned int tainted:1;
 };
 
@@ -71,6 +86,9 @@ extern int s2n_stuffer_writev_bytes(struct s2n_stuffer *stuffer, const struct io
 extern int s2n_stuffer_skip_read(struct s2n_stuffer *stuffer, uint32_t n);
 extern int s2n_stuffer_skip_write(struct s2n_stuffer *stuffer, const uint32_t n);
 
+/* Tries to reserve enough space to write n additional bytes into the stuffer.*/
+extern int s2n_stuffer_reserve_space(struct s2n_stuffer *stuffer, uint32_t n);
+
 /* Raw read/write move the cursor along and give you a pointer you can
  * read/write data_len bytes from/to in-place.
  */
@@ -94,6 +112,18 @@ extern int s2n_stuffer_write_uint24(struct s2n_stuffer *stuffer, const uint32_t 
 extern int s2n_stuffer_write_uint32(struct s2n_stuffer *stuffer, const uint32_t u);
 extern int s2n_stuffer_write_uint64(struct s2n_stuffer *stuffer, const uint64_t u);
 
+/* Allocate space now for network order integers that will be written later.
+ * These are primarily intended to handle the vector type defined in the RFC:
+ * https://tools.ietf.org/html/rfc8446#section-3.4 */
+struct s2n_stuffer_reservation {
+    struct s2n_stuffer *stuffer;
+    uint32_t write_cursor;
+    uint8_t length;
+};
+extern int s2n_stuffer_reserve_uint16(struct s2n_stuffer *stuffer, struct s2n_stuffer_reservation *reservation);
+extern int s2n_stuffer_reserve_uint24(struct s2n_stuffer *stuffer, struct s2n_stuffer_reservation *reservation);
+extern int s2n_stuffer_write_vector_size(struct s2n_stuffer_reservation reservation);
+
 /* Copy one stuffer to another */
 extern int s2n_stuffer_copy(struct s2n_stuffer *from, struct s2n_stuffer *to, uint32_t len);
 
@@ -114,7 +144,7 @@ extern int s2n_stuffer_read_line(struct s2n_stuffer *stuffer, struct s2n_stuffer
 extern int s2n_stuffer_peek_check_for_str(struct s2n_stuffer *s2n_stuffer, const char *expected);
 extern int s2n_stuffer_skip_whitespace(struct s2n_stuffer *stuffer);
 extern int s2n_stuffer_skip_to_char(struct s2n_stuffer *stuffer, char target);
-extern int s2n_stuffer_skip_expected_char(struct s2n_stuffer *stuffer, const char expected, int min, int max);
+extern int s2n_stuffer_skip_expected_char(struct s2n_stuffer *stuffer, const char expected, const uint32_t min, const uint32_t max, uint32_t *skipped);
 extern int s2n_stuffer_skip_read_until(struct s2n_stuffer *stuffer, const char* target);
 extern int s2n_stuffer_alloc_ro_from_string(struct s2n_stuffer *stuffer, const char *str);
 
@@ -127,7 +157,7 @@ extern int s2n_stuffer_certificate_from_pem(struct s2n_stuffer *pem, struct s2n_
 /* Read DH parameters om a PEM encoded stuffer to a PKCS3 encoded one */
 extern int s2n_stuffer_dhparams_from_pem(struct s2n_stuffer *pem, struct s2n_stuffer *pkcs3);
 
-extern int s2n_is_base64_char(char c);
+extern bool s2n_is_base64_char(unsigned char c);
 
 /* Copies all valid data from "stuffer" into "out".
  * The old blob "out" pointed to is freed.

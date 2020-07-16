@@ -18,8 +18,34 @@
 #include "tls/s2n_connection.h"
 #include "tls/extensions/s2n_server_server_name.h"
 
-int s2n_recv_server_server_name(struct s2n_connection *conn, struct s2n_stuffer *extension)
+static bool s2n_server_name_should_send(struct s2n_connection *conn);
+static int s2n_server_name_send(struct s2n_connection *conn, struct s2n_stuffer *out);
+static int s2n_server_name_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);
+
+const s2n_extension_type s2n_server_server_name_extension = {
+    .iana_value = TLS_EXTENSION_SERVER_NAME,
+    .is_response = true,
+    .send = s2n_server_name_send,
+    .recv = s2n_server_name_recv,
+    .should_send = s2n_server_name_should_send,
+    .if_missing = s2n_extension_noop_if_missing,
+};
+
+static bool s2n_server_name_should_send(struct s2n_connection *conn)
 {
+    return conn && conn->server_name_used && !s2n_connection_is_session_resumed(conn);
+}
+
+static int s2n_server_name_send(struct s2n_connection *conn, struct s2n_stuffer *out)
+{
+    /* Write nothing. The extension just needs to exist. */
+    return S2N_SUCCESS;
+}
+
+static int s2n_server_name_recv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+{
+    notnull_check(conn);
+    /* Read nothing. The extension just needs to exist. */
     conn->server_name_used = 1;
-    return 0;
+    return S2N_SUCCESS;
 }

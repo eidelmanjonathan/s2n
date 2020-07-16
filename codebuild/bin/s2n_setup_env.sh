@@ -25,21 +25,25 @@
 # Setup the cache directory paths.
 # Set Env Variables with defaults if they aren't already set
 : "${BASE_S2N_DIR:=$(pwd)}"
-: "${PYTHON_INSTALL_DIR:=$(pwd)/test-deps/python}"
-: "${GNUTLS_INSTALL_DIR:=$(pwd)/test-deps/gnutls}"
-: "${PRLIMIT_INSTALL_DIR:=$(pwd)/test-deps/prlimit}"
-: "${SAW_INSTALL_DIR:=$(pwd)/test-deps/saw}"
-: "${Z3_INSTALL_DIR:=$(pwd)/test-deps/z3}"
-: "${LIBFUZZER_INSTALL_DIR:=$(pwd)/test-deps/libfuzzer}"
-: "${LATEST_CLANG_INSTALL_DIR:=$(pwd)/test-deps/clang}"
-: "${SCAN_BUILD_INSTALL_DIR:=$(pwd)/test-deps/scan-build}"
-: "${OPENSSL_1_1_1_INSTALL_DIR:=$(pwd)/test-deps/openssl-1.1.1}"
-: "${OPENSSL_1_0_2_INSTALL_DIR:=$(pwd)/test-deps/openssl-1.0.2}"
-: "${OPENSSL_1_0_2_FIPS_INSTALL_DIR:=$(pwd)/test-deps/openssl-1.0.2-fips}"
-: "${LIBRESSL_INSTALL_DIR:=$(pwd)/test-deps/libressl-2.6.4}"
-: "${CPPCHECK_INSTALL_DIR:=$(pwd)/test-deps/cppcheck}"
-: "${CTVERIF_INSTALL_DIR:=$(pwd)/test-deps/ctverif}"
-: "${SIDETRAIL_INSTALL_DIR:=$(pwd)/test-deps/sidetrail}"
+: "${TEST_DEPS_DIR:=$BASE_S2N_DIR/test-deps}"
+: "${PYTHON_INSTALL_DIR:=$TEST_DEPS_DIR/python}"
+: "${GNUTLS_INSTALL_DIR:=$TEST_DEPS_DIR/gnutls}"
+: "${PRLIMIT_INSTALL_DIR:=$TEST_DEPS_DIR/prlimit}"
+: "${SAW_INSTALL_DIR:=$TEST_DEPS_DIR/saw}"
+: "${Z3_INSTALL_DIR:=$TEST_DEPS_DIR/z3}"
+: "${LIBFUZZER_INSTALL_DIR:=$TEST_DEPS_DIR/libfuzzer}"
+: "${LATEST_CLANG_INSTALL_DIR:=$TEST_DEPS_DIR/clang}"
+: "${SCAN_BUILD_INSTALL_DIR:=$TEST_DEPS_DIR/scan-build}"
+: "${OPENSSL_0_9_8_INSTALL_DIR:=$TEST_DEPS_DIR/openssl-0.9.8}"
+: "${OPENSSL_1_1_1_INSTALL_DIR:=$TEST_DEPS_DIR/openssl-1.1.1}"
+: "${OPENSSL_1_0_2_INSTALL_DIR:=$TEST_DEPS_DIR/openssl-1.0.2}"
+: "${OPENSSL_1_0_2_FIPS_INSTALL_DIR:=$TEST_DEPS_DIR/openssl-1.0.2-fips}"
+: "${BORINGSSL_INSTALL_DIR:=$TEST_DEPS_DIR/boringssl}"
+: "${LIBRESSL_INSTALL_DIR:=$TEST_DEPS_DIR/libressl-2.6.4}"
+: "${CPPCHECK_INSTALL_DIR:=$TEST_DEPS_DIR/cppcheck}"
+: "${CTVERIF_INSTALL_DIR:=$TEST_DEPS_DIR/ctverif}"
+: "${SIDETRAIL_INSTALL_DIR:=$TEST_DEPS_DIR/sidetrail}"
+: "${GB_INSTALL_DIR:=$TEST_DEPS_DIR/gb}"
 : "${FUZZ_TIMEOUT_SEC:=10}"
 
 # OS_NAME
@@ -60,20 +64,23 @@ export Z3_INSTALL_DIR
 export LIBFUZZER_INSTALL_DIR
 export LATEST_CLANG_INSTALL_DIR
 export SCAN_BUILD_INSTALL_DIR
+export OPENSSL_0_9_8_INSTALL_DIR
 export OPENSSL_1_1_1_INSTALL_DIR
 export OPENSSL_1_0_2_INSTALL_DIR
 export OPENSSL_1_0_2_FIPS_INSTALL_DIR
+export BORINGSSL_INSTALL_DIR
 export LIBRESSL_INSTALL_DIR
 export CPPCHECK_INSTALL_DIR
 export CTVERIF_INSTALL_DIR
 export SIDETRAIL_INSTALL_DIR
 export OPENSSL_1_1_X_MASTER_INSTALL_DIR
 export FUZZ_TIMEOUT_SEC
+export GB_INSTALL_DIR
 export OS_NAME
 export S2N_CORKED_IO
 
 # S2N_COVERAGE should not be used with fuzz tests, use FUZZ_COVERAGE instead
-if [[ -v S2N_COVERAGE && "$TESTS" == "fuzz" ]]; then
+if [[ ! -z "$S2N_COVERAGE" && "$TESTS" == "fuzz" ]]; then
     unset S2N_COVERAGE
     export FUZZ_COVERAGE=true
 fi
@@ -82,10 +89,11 @@ fi
 if [[ -z $S2N_LIBCRYPTO ]]; then export LIBCRYPTO_ROOT=$OPENSSL_1_1_1_INSTALL_DIR ; fi
 if [[ "$S2N_LIBCRYPTO" == "openssl-1.1.1" ]]; then export LIBCRYPTO_ROOT=$OPENSSL_1_1_1_INSTALL_DIR ; fi
 if [[ "$S2N_LIBCRYPTO" == "openssl-1.0.2" ]]; then export LIBCRYPTO_ROOT=$OPENSSL_1_0_2_INSTALL_DIR ; fi
-if [[ "$S2N_LIBCRYPTO" == "openssl-1.0.2-fips" ]]; then 
-    export LIBCRYPTO_ROOT=$OPENSSL_1_0_2_FIPS_INSTALL_DIR ; 
-    export S2N_TEST_IN_FIPS_MODE=1 ; 
+if [[ "$S2N_LIBCRYPTO" == "openssl-1.0.2-fips" ]]; then
+    export LIBCRYPTO_ROOT=$OPENSSL_1_0_2_FIPS_INSTALL_DIR ;
+    export S2N_TEST_IN_FIPS_MODE=1 ;
 fi
+if [[ "$S2N_LIBCRYPTO" == "boringssl" ]]; then export LIBCRYPTO_ROOT=$BORINGSSL_INSTALL_DIR ; fi
 
 if [[ "$S2N_LIBCRYPTO" == "libressl" ]]; then export LIBCRYPTO_ROOT=$LIBRESSL_INSTALL_DIR ; fi
 
@@ -103,6 +111,7 @@ fi
 echo "UID=$UID"
 echo "OS_NAME=$OS_NAME"
 echo "S2N_LIBCRYPTO=$S2N_LIBCRYPTO"
+echo "LIBCRYPTO_ROOT=$LIBCRYPTO_ROOT"
 echo "BUILD_S2N=$BUILD_S2N"
 echo "GCC_VERSION=$GCC_VERSION"
 echo "LATEST_CLANG=$LATEST_CLANG"

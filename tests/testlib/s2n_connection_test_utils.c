@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include "tls/s2n_connection.h"
 #include "utils/s2n_safety.h"
@@ -24,7 +26,7 @@
 
 
 int s2n_fd_set_blocking(int fd) {
-    return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) ^ O_NONBLOCK);
+    return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
 }
 
 int s2n_fd_set_non_blocking(int fd) {
@@ -96,66 +98,72 @@ int s2n_connection_set_io_stuffers(struct s2n_stuffer *input, struct s2n_stuffer
     return 0;
 }
 
-int s2n_piped_io_init(struct s2n_test_piped_io *piped_io) {
+int s2n_io_pair_init(struct s2n_test_io_pair *io_pair)
+{
     signal(SIGPIPE, SIG_IGN);
 
-    int server_to_client[2];
-    int client_to_server[2];
+    int socket_pair[2];
 
-    GUARD(pipe(server_to_client));
-    GUARD(pipe(client_to_server));
+    GUARD(socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair));
 
-    piped_io->client_read = server_to_client[0];
-    piped_io->client_write = client_to_server[1];
-
-    piped_io->server_read = client_to_server[0];
-    piped_io->server_write = server_to_client[1];
+    io_pair->client = socket_pair[0];
+    io_pair->server = socket_pair[1];
 
     return 0;
 }
 
-int s2n_piped_io_init_non_blocking(struct s2n_test_piped_io *piped_io) {
-    GUARD(s2n_piped_io_init(piped_io));
+int s2n_io_pair_init_non_blocking(struct s2n_test_io_pair *io_pair)
+{
+    GUARD(s2n_io_pair_init(io_pair));
 
-    GUARD(s2n_fd_set_non_blocking(piped_io->client_read));
-    GUARD(s2n_fd_set_non_blocking(piped_io->client_write));
-    GUARD(s2n_fd_set_non_blocking(piped_io->server_read));
-    GUARD(s2n_fd_set_non_blocking(piped_io->server_write));
+    GUARD(s2n_fd_set_non_blocking(io_pair->client));
+    GUARD(s2n_fd_set_non_blocking(io_pair->server));
 
     return 0;
 }
 
-int s2n_connection_set_piped_io(struct s2n_connection *conn, struct s2n_test_piped_io* piped_io) {
+int s2n_connection_set_io_pair(struct s2n_connection *conn, struct s2n_test_io_pair *io_pair)
+{
     if (conn->mode == S2N_CLIENT) {
-        GUARD(s2n_connection_set_read_fd(conn, piped_io->client_read));
-        GUARD(s2n_connection_set_write_fd(conn, piped_io->client_write));
+        GUARD(s2n_connection_set_fd(conn, io_pair->client));
     } else if (conn->mode == S2N_SERVER) {
-        GUARD(s2n_connection_set_read_fd(conn, piped_io->server_read));
-        GUARD(s2n_connection_set_write_fd(conn, piped_io->server_write));
+        GUARD(s2n_connection_set_fd(conn, io_pair->server));
     }
 
     return 0;
 }
 
-int s2n_connections_set_piped_io(struct s2n_connection *client, struct s2n_connection *server, struct s2n_test_piped_io* piped_io) {
-    GUARD(s2n_connection_set_piped_io(client, piped_io));
-    GUARD(s2n_connection_set_piped_io(server, piped_io));
+int s2n_connections_set_io_pair(struct s2n_connection *client, struct s2n_connection *server,
+                                struct s2n_test_io_pair *io_pair)
+{
+    GUARD(s2n_connection_set_io_pair(client, io_pair));
+    GUARD(s2n_connection_set_io_pair(server, io_pair));
     return 0;
 }
 
-int s2n_piped_io_close(struct s2n_test_piped_io *piped_io) {
-    GUARD(s2n_piped_io_close_one_end(piped_io, S2N_CLIENT));
-    GUARD(s2n_piped_io_close_one_end(piped_io, S2N_SERVER));
+int s2n_io_pair_close(struct s2n_test_io_pair *io_pair)
+{
+    GUARD(s2n_io_pair_close_one_end(io_pair, S2N_CLIENT));
+    GUARD(s2n_io_pair_close_one_end(io_pair, S2N_SERVER));
     return 0;
 }
 
-int s2n_piped_io_close_one_end(struct s2n_test_piped_io *piped_io, int mode_to_close) {
+int s2n_io_pair_close_one_end(struct s2n_test_io_pair *io_pair, int mode_to_close)
+{
     if (mode_to_close == S2N_CLIENT) {
-        GUARD(close(piped_io->client_read));
-        GUARD(close(piped_io->client_write));
+        GUARD(close(io_pair->client));
     } else if(mode_to_close == S2N_SERVER) {
-        GUARD(close(piped_io->server_read));
-        GUARD(close(piped_io->server_write));
+        GUARD(close(io_pair->server));
+    }
+    return 0;
+}
+
+int s2n_io_pair_shutdown_one_end(struct s2n_test_io_pair *io_pair, int mode_to_close, int how)
+{
+    if (mode_to_close == S2N_CLIENT) {
+        GUARD(shutdown(io_pair->client, how));
+    } else if(mode_to_close == S2N_SERVER) {
+        GUARD(shutdown(io_pair->server, how));
     }
     return 0;
 }
@@ -200,4 +208,25 @@ void s2n_print_connection(struct s2n_connection *conn, const char *marker)
         }
     }
     printf("\n");
+}
+
+int s2n_set_connection_hello_retry_flags(struct s2n_connection *conn)
+{
+    notnull_check(conn);
+
+    conn->handshake.message_number = 1;
+    conn->handshake.handshake_type = NEGOTIATED | HELLO_RETRY_REQUEST | FULL_HANDSHAKE;
+
+    return S2N_SUCCESS;
+}
+
+int s2n_connection_set_all_protocol_versions(struct s2n_connection *conn, uint8_t version)
+{
+    notnull_check(conn);
+
+    conn->server_protocol_version = version;
+    conn->client_protocol_version = version;
+    conn->actual_protocol_version = version;
+
+    return S2N_SUCCESS;
 }

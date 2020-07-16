@@ -15,15 +15,13 @@
 
 #pragma once
 
+#include "api/s2n.h"
 #include "crypto/s2n_certificate.h"
 #include "crypto/s2n_dhe.h"
-
+#include "tls/s2n_resume.h"
+#include "tls/s2n_x509_validator.h"
 #include "utils/s2n_blob.h"
 #include "utils/s2n_set.h"
-#include "api/s2n.h"
-
-#include "tls/s2n_x509_validator.h"
-#include "tls/s2n_resume.h"
 
 #define S2N_MAX_TICKET_KEYS 48
 #define S2N_MAX_TICKET_KEY_HASHES 500 /* 10KB */
@@ -46,14 +44,13 @@ struct s2n_config {
      * used to release memory allocated only in the deprecated API that the application 
      * does not have a reference to. */
     struct s2n_map *domain_name_to_cert_map;
-    struct auth_method_to_cert_value default_cert_per_auth_method;
+    struct certs_by_type default_certs_by_type;
     struct s2n_blob application_protocols;
     s2n_status_request_type status_request_type;
     s2n_clock_time_nanoseconds wall_clock;
     s2n_clock_time_nanoseconds monotonic_clock;
 
-    const struct s2n_cipher_preferences *cipher_preferences;
-    const struct s2n_signature_preferences *signature_preferences;
+    const struct s2n_security_policy *security_policy;
 
     void *sys_clock_ctx;
     void *monotonic_clock_ctx;
@@ -86,7 +83,7 @@ struct s2n_config {
 
     /* Return TRUE if the host should be trusted, If FALSE this will likely be called again for every host/alternative name
      * in the certificate. If any respond TRUE. If none return TRUE, the cert will be considered untrusted. */
-    uint8_t (*verify_host) (const char *host_name, size_t host_name_len, void *data);
+    uint8_t (*verify_host)(const char *host_name, size_t host_name_len, void *data);
     void *data_for_verify_host;
 
     /* Application supplied callback to resolve domain name conflicts when loading certs. */
@@ -96,16 +93,17 @@ struct s2n_config {
 
     struct s2n_x509_trust_store trust_store;
     uint16_t max_verify_cert_chain_depth;
+
+    s2n_async_pkey_fn async_pkey_cb;
 };
 
+int s2n_config_defaults_init(void);
 extern struct s2n_config *s2n_fetch_default_config(void);
-extern struct s2n_config *s2n_fetch_default_fips_config(void);
-extern struct s2n_config *s2n_fetch_unsafe_client_testing_config(void);
-extern struct s2n_config *s2n_fetch_unsafe_client_ecdsa_testing_config(void);
+int s2n_config_set_unsafe_for_testing(struct s2n_config *config);
 
-extern int s2n_config_init_session_ticket_keys(struct s2n_config *config);
-extern int s2n_config_free_session_ticket_keys(struct s2n_config *config);
+int s2n_config_init_session_ticket_keys(struct s2n_config *config);
+int s2n_config_free_session_ticket_keys(struct s2n_config *config);
 
-extern void s2n_wipe_static_configs(void);
+void s2n_wipe_static_configs(void);
 extern struct s2n_cert_chain_and_key *s2n_config_get_single_default_cert(struct s2n_config *config);
-extern int s2n_config_get_num_default_certs(struct s2n_config *config);
+int s2n_config_get_num_default_certs(struct s2n_config *config);

@@ -27,26 +27,21 @@
 #include "tls/s2n_tls.h"
 #include "tls/s2n_cipher_suites.h"
 #include "tls/s2n_cipher_preferences.h"
+#include "tls/s2n_security_policies.h"
 
-/* If the configured lib crypto supports a custom random number generator this test is run with a AES 256 DRBG with no
- * prediction resistance RNG. Running in that mode all the server and client key exchange messages and final master
- * secret can be checked against the expected values in RSP_FILE_NAME. */
-#if S2N_LIBCRYPTO_SUPPORTS_CUSTOM_RAND
 struct s2n_blob hybrid_kat_entropy_blob = {0};
-int s2n_entropy_generator(struct s2n_blob *blob)
-{
-    eq_check(blob->size, hybrid_kat_entropy_blob.size);
-    blob->data = hybrid_kat_entropy_blob.data;
-    return 0;
-}
-#endif
 
 int setup_connection(struct s2n_connection *conn, const struct s2n_kem *kem, struct s2n_cipher_suite *cipher_suite,
                      const char *cipher_pref_version) {
     S2N_ERROR_IF(s2n_is_in_fips_mode(), S2N_ERR_PQ_KEMS_DISALLOWED_IN_FIPS);
     conn->actual_protocol_version = S2N_TLS12;
-    conn->secure.server_ecc_evp_params.negotiated_curve = s2n_ecc_evp_supported_curves_list[0];
-    conn->secure.s2n_kem_keys.negotiated_kem = kem;
+
+    const struct s2n_ecc_preferences *ecc_preferences = NULL;
+    GUARD(s2n_connection_get_ecc_preferences(conn, &ecc_preferences));
+    GUARD_NONNULL(ecc_preferences);
+
+    conn->secure.server_ecc_evp_params.negotiated_curve = ecc_preferences->ecc_curves[0];
+    conn->secure.kem_params.kem = kem;
     conn->secure.cipher_suite = cipher_suite;
     conn->secure.conn_sig_scheme = s2n_rsa_pkcs1_sha384;
     GUARD(s2n_connection_set_cipher_preferences(conn, cipher_pref_version));
@@ -59,19 +54,20 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
     S2N_ERROR_IF(s2n_is_in_fips_mode(), S2N_ERR_PQ_KEMS_DISALLOWED_IN_FIPS);
 
     /* Part 1 setup a client and server connection with everything they need for a key exchange */
-    struct s2n_connection *client_conn, *server_conn;
+    struct s2n_connection *client_conn = NULL, *server_conn = NULL;
     GUARD_NONNULL(client_conn = s2n_connection_new(S2N_CLIENT));
     GUARD_NONNULL(server_conn = s2n_connection_new(S2N_SERVER));
 
-    struct s2n_config *server_config, *client_config;
+    struct s2n_config *server_config = NULL, *client_config = NULL;
 
-    client_config = s2n_fetch_unsafe_client_testing_config();
+    GUARD_NONNULL(client_config = s2n_config_new());
+    GUARD(s2n_config_set_unsafe_for_testing(client_config));
     GUARD(s2n_connection_set_config(client_conn, client_config));
 
     /* Part 1.1 setup server's keypair and the give the client the certificate */
-    char *cert_chain;
-    char *private_key;
-    char *client_chain;
+    char *cert_chain = NULL;
+    char *private_key = NULL;
+    char *client_chain = NULL;
     GUARD_NONNULL(cert_chain = malloc(S2N_MAX_TEST_PEM_SIZE));
     GUARD_NONNULL(private_key = malloc(S2N_MAX_TEST_PEM_SIZE));
     GUARD_NONNULL(client_chain = malloc(S2N_MAX_TEST_PEM_SIZE));
@@ -80,7 +76,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
     GUARD(s2n_read_test_pem(S2N_RSA_2048_PKCS1_KEY, private_key, S2N_MAX_TEST_PEM_SIZE));
     GUARD(s2n_read_test_pem(S2N_RSA_2048_PKCS1_LEAF_CERT, client_chain, S2N_MAX_TEST_PEM_SIZE));
 
-    struct s2n_cert_chain_and_key *chain_and_key;
+    struct s2n_cert_chain_and_key *chain_and_key = NULL;
     GUARD_NONNULL(chain_and_key = s2n_cert_chain_and_key_new());
     GUARD(s2n_cert_chain_and_key_load_pem(chain_and_key, cert_chain, private_key));
     GUARD(s2n_config_add_cert_chain_and_key_to_store(server_config, chain_and_key));
@@ -93,15 +89,14 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
     DEFER_CLEANUP(struct s2n_stuffer certificate_out = {0}, s2n_stuffer_free);
     GUARD(s2n_stuffer_alloc(&certificate_out, S2N_MAX_TEST_PEM_SIZE));
 
-    struct s2n_blob temp_blob;
-    temp_blob.data = (uint8_t *) client_chain;
-    temp_blob.size = strlen(client_chain) + 1;
+    struct s2n_blob temp_blob = {0};
+    GUARD(s2n_blob_init(&temp_blob, (uint8_t *) client_chain, strlen(client_chain) + 1));
     GUARD(s2n_stuffer_write(&certificate_in, &temp_blob));
     GUARD(s2n_stuffer_certificate_from_pem(&certificate_in, &certificate_out));
 
     temp_blob.size = s2n_stuffer_data_available(&certificate_out);
     temp_blob.data = s2n_stuffer_raw_read(&certificate_out, temp_blob.size);
-    s2n_pkey_type pkey_type;
+    s2n_pkey_type pkey_type = {0};
     GUARD(s2n_asn1der_to_public_key_and_type(&client_conn->secure.server_public_key, &pkey_type, &temp_blob));
 
     server_conn->handshake_params.our_chain_and_key = chain_and_key;
@@ -117,11 +112,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
     GUARD_NONNULL(kat_file);
     GUARD(s2n_alloc(&hybrid_kat_entropy_blob, 48));
     GUARD(ReadHex(kat_file, hybrid_kat_entropy_blob.data, 48, "seed = "));
-
-    struct s2n_drbg drbg = {.entropy_generator = &s2n_entropy_generator};
-    s2n_stack_blob(personalization_string, 32, 32);
-    GUARD(s2n_drbg_instantiate(&drbg, &personalization_string, S2N_DANGEROUS_AES_256_CTR_NO_DF_NO_PR));
-    GUARD(s2n_set_private_drbg_for_test(drbg));
+    GUARD(s2n_unsafe_set_drbg_seed(&hybrid_kat_entropy_blob));
 #endif
 
     /* Part 2 server sends key first */
@@ -133,7 +124,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
 
 #if S2N_LIBCRYPTO_SUPPORTS_CUSTOM_RAND
     /* Part 2.1.1 if we're running in known answer mode check the server's key exchange message matches the expected value */
-    uint8_t *expected_server_key_message;
+    uint8_t *expected_server_key_message = NULL;
     GUARD_NONNULL(expected_server_key_message = malloc(server_key_message_length));
     GUARD(ReadHex(kat_file, expected_server_key_message, server_key_message_length, "expected_server_key_exchange = "));
 
@@ -155,7 +146,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
 
 #if S2N_LIBCRYPTO_SUPPORTS_CUSTOM_RAND
     /* Part 3.1.1 if we're running in known answer mode check the client's key exchange message matches the expected value */
-    uint8_t *expected_client_key_message;
+    uint8_t *expected_client_key_message = NULL;
     GUARD_NONNULL(expected_client_key_message = malloc(client_key_message_length));
     GUARD(ReadHex(kat_file, expected_client_key_message, client_key_message_length, "expected_client_key_exchange = "));
 
@@ -187,6 +178,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
     GUARD(s2n_connection_free(client_conn));
     GUARD(s2n_connection_free(server_conn));
     GUARD(s2n_config_free(server_config));
+    GUARD(s2n_config_free(client_config));
     free(cert_chain);
     free(client_chain);
     free(private_key);

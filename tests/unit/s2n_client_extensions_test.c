@@ -63,13 +63,15 @@ static uint8_t sct_list[] = {
 
 extern message_type_t s2n_conn_get_current_message_type(struct s2n_connection *conn);
 
+#if !defined(S2N_NO_PQ)
 /* Helper function to allow us to easily repeat the PQ extension test for many scenarios.
  * If the KEM negotiation is expected to fail (because of e.g. a client/server extension
  * mismatch), pass in expected_kem_id = -1. The tests should always EXPECT_SUCCESS when
  * calling this function. */
-static int negotiate_kem(const uint8_t client_extensions[], const size_t client_extensions_len, const uint8_t client_hello_message[],
-                                const size_t client_hello_len, const char cipher_pref_version[], const int expected_kem_id,
-                                struct s2n_test_piped_io *piped_io) {
+static int negotiate_kem(const uint8_t client_extensions[], const size_t client_extensions_len,
+                         const uint8_t client_hello_message[], const size_t client_hello_len,
+                         const char cipher_pref_version[], const int expected_kem_id, struct s2n_test_io_pair *io_pair)
+{
     S2N_ERROR_IF(s2n_is_in_fips_mode(), S2N_ERR_PQ_KEMS_DISALLOWED_IN_FIPS);
 
     char *cert_chain;
@@ -105,7 +107,7 @@ static int negotiate_kem(const uint8_t client_extensions[], const size_t client_
 
 
     GUARD_NONNULL(server_conn = s2n_connection_new(S2N_SERVER));
-    GUARD(s2n_connection_set_piped_io(server_conn, piped_io));
+    GUARD(s2n_connection_set_io_pair(server_conn, io_pair));
 
     GUARD_NONNULL(server_config = s2n_config_new());
     GUARD(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -115,13 +117,13 @@ static int negotiate_kem(const uint8_t client_extensions[], const size_t client_
     GUARD(s2n_config_add_cert_chain_and_key_to_store(server_config, chain_and_key));
     GUARD(s2n_config_set_cipher_preferences(server_config, cipher_pref_version));
     GUARD(s2n_connection_set_config(server_conn, server_config));
-    server_conn->secure.s2n_kem_keys.negotiated_kem = NULL;
+    server_conn->secure.kem_params.kem = NULL;
 
     /* Send the client hello */
-    eq_check(write(piped_io->client_write, record_header, record_header_len),record_header_len);
-    eq_check(write(piped_io->client_write, message_header, message_header_len),message_header_len);
-    eq_check(write(piped_io->client_write, client_hello_message, client_hello_len),client_hello_len);
-    eq_check(write(piped_io->client_write, client_extensions, client_extensions_len),client_extensions_len);
+    eq_check(write(io_pair->client, record_header, record_header_len),record_header_len);
+    eq_check(write(io_pair->client, message_header, message_header_len),message_header_len);
+    eq_check(write(io_pair->client, client_hello_message, client_hello_len),client_hello_len);
+    eq_check(write(io_pair->client, client_extensions, client_extensions_len),client_extensions_len);
 
     GUARD(s2n_connection_set_blinding(server_conn, S2N_SELF_SERVICE_BLINDING));
     if (s2n_negotiate(server_conn, &server_blocked) == 0) {
@@ -132,8 +134,8 @@ static int negotiate_kem(const uint8_t client_extensions[], const size_t client_
 
     int negotiated_kem_id;
 
-    if (server_conn->secure.s2n_kem_keys.negotiated_kem != NULL) {
-        negotiated_kem_id = server_conn->secure.s2n_kem_keys.negotiated_kem->kem_extension_id;
+    if (server_conn->secure.kem_params.kem != NULL) {
+        negotiated_kem_id = server_conn->secure.kem_params.kem->kem_extension_id;
     } else {
         negotiated_kem_id = -1;
     }
@@ -149,6 +151,7 @@ static int negotiate_kem(const uint8_t client_extensions[], const size_t client_
     
     return 0;
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -162,9 +165,9 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(setenv("S2N_DONT_MLOCK", "1", 0));
 
     /* Create nonblocking pipes */
-    struct s2n_test_piped_io piped_io;
-    EXPECT_SUCCESS(s2n_piped_io_init_non_blocking(&piped_io));
-    
+    struct s2n_test_io_pair io_pair;
+    EXPECT_SUCCESS(s2n_io_pair_init_non_blocking(&io_pair));
+
     /* Client doesn't use the server name extension. */
     {
         struct s2n_connection *client_conn;
@@ -187,7 +190,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -240,7 +243,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_ALLIGATOR_SAN_CERT, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -339,7 +342,7 @@ int main(int argc, char **argv)
         server_conn->actual_protocol_version = S2N_TLS12;
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -350,10 +353,10 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_set_config(server_conn, server_config));
 
         /* Send the client hello */
-        EXPECT_EQUAL(write(piped_io.client_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.client_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.client_write, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
-        EXPECT_EQUAL(write(piped_io.client_write, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
+        EXPECT_EQUAL(write(io_pair.client, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.client, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.client, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
+        EXPECT_EQUAL(write(io_pair.client, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
 
         /* Verify that the CLIENT HELLO is accepted */
         s2n_negotiate(server_conn, &server_blocked);
@@ -463,7 +466,7 @@ int main(int argc, char **argv)
         };
 
         EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -474,15 +477,15 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_set_config(server_conn, server_config));
 
         /* Send the client hello */
-        EXPECT_EQUAL(write(piped_io.client_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.client_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.client_write, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
-        EXPECT_EQUAL(write(piped_io.client_write, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
+        EXPECT_EQUAL(write(io_pair.client, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.client, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.client, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
+        EXPECT_EQUAL(write(io_pair.client, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
 
         /* Verify that we fail for duplicated extension type Bad Message */
         EXPECT_SUCCESS(s2n_connection_set_blinding(server_conn, S2N_SELF_SERVICE_BLINDING));
         s2n_negotiate(server_conn, &server_blocked);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BAD_MESSAGE);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_DUPLICATE_EXTENSION);
 
         EXPECT_SUCCESS(s2n_connection_free(server_conn));
         
@@ -545,7 +548,7 @@ int main(int argc, char **argv)
         };
 
         EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -556,10 +559,10 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_set_config(server_conn, server_config));
 
         /* Send the client hello */
-        EXPECT_EQUAL(write(piped_io.client_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.client_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.client_write, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
-        EXPECT_EQUAL(write(piped_io.client_write, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
+        EXPECT_EQUAL(write(io_pair.client, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.client, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.client, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
+        EXPECT_EQUAL(write(io_pair.client, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
 
         /* Verify that the CLIENT HELLO is accepted */
         s2n_negotiate(server_conn, &server_blocked);
@@ -639,7 +642,7 @@ int main(int argc, char **argv)
         };
 
         EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -650,10 +653,10 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_set_config(server_conn, server_config));
 
         /* Send the client hello */
-        EXPECT_EQUAL(write(piped_io.client_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.client_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.client_write, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
-        EXPECT_EQUAL(write(piped_io.client_write, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
+        EXPECT_EQUAL(write(io_pair.client, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.client, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.client, client_hello_message, sizeof(client_hello_message)), sizeof(client_hello_message));
+        EXPECT_EQUAL(write(io_pair.client, client_extensions, sizeof(client_extensions)), sizeof(client_extensions));
 
         /* Verify that we fail for non-empty renegotiated_connection */
         EXPECT_SUCCESS(s2n_connection_set_blinding(server_conn, S2N_SELF_SERVICE_BLINDING));
@@ -665,7 +668,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_config_free(server_config));
         
         /* Clear pipe since negotiation failed mid-handshake */
-        EXPECT_SUCCESS(read(piped_io.client_read, buf, sizeof(buf)));
+        EXPECT_SUCCESS(read(io_pair.client, buf, sizeof(buf)));
     }
 
     /* Client doesn't use the OCSP extension. */
@@ -690,7 +693,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -745,7 +748,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -802,8 +805,8 @@ int main(int argc, char **argv)
 
         EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
         EXPECT_SUCCESS(s2n_connection_set_config(server_conn, server_config));
-        
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_SUCCESS(s2n_negotiate_test_server_and_client(server_conn, client_conn));
 
@@ -853,7 +856,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -909,7 +912,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -961,7 +964,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -1014,7 +1017,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain, S2N_MAX_TEST_PEM_SIZE));
@@ -1067,7 +1070,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_accept_max_fragment_length(server_config));
@@ -1119,7 +1122,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_accept_max_fragment_length(server_config));
@@ -1169,7 +1172,7 @@ int main(int argc, char **argv)
         server_conn->server_protocol_version = S2N_TLS12;
         server_conn->client_protocol_version = S2N_TLS12;
 
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(client_conn, server_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(client_conn, server_conn, &io_pair));
 
         EXPECT_NOT_NULL(server_config = s2n_config_new());
         EXPECT_NOT_NULL(chain_and_key = s2n_cert_chain_and_key_new());
@@ -1194,6 +1197,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_config_free(client_config));
     }
 
+#if !defined(S2N_NO_PQ)
     if (!s2n_is_in_fips_mode()) {
         /* PQ KEMs are not supported when in FIPS mode */
         /* All PQ KEM byte values are from https://tools.ietf.org/html/draft-campagna-tls-bike-sike-hybrid-02 */
@@ -1211,7 +1215,7 @@ int main(int argc, char **argv)
                     /* BIKE1_L1_R1 */
                     0x00, 0x01,
                     /* SIKE_P434_R2 */
-                    0x00, 0x10,
+                    0x00, 0x13,
                     /* BIKE1_L1_R2 */
                     0x00, 0x0D,
             };
@@ -1240,7 +1244,7 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2, &io_pair));
         }
         {
             /* Expect BIKE1_L1_R1 KEM - client requests BIKE ciphersuite and provides
@@ -1256,7 +1260,7 @@ int main(int argc, char **argv)
                     /* BIKE1_L1_R2 */
                     0x00, 0x0D,
                     /* SIKE_P434_R2 */
-                    0x00, 0x10,
+                    0x00, 0x13,
                     /* BIKE1_L1_R1 */
                     0x00, 0x01,
             };
@@ -1285,7 +1289,7 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2019-06", TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R1, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2019-06", TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R1, &io_pair));
         }
         {
             /* Expect SIKE_P434_R2 KEM - client requests BIKE or SIKE ciphersuites and
@@ -1301,7 +1305,7 @@ int main(int argc, char **argv)
                     /* SIKE_P503_R1 */
                     0x00, 0x0A,
                     /* SIKE_P434_R2 */
-                    0x00, 0x10,
+                    0x00, 0x13,
             };
             size_t client_extensions_len = sizeof(client_extensions);
             uint8_t client_hello_message[] = {
@@ -1330,7 +1334,7 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2, &io_pair));
         }
         {
             /* Expect BIKE1_L1_R2 KEM - client requests BIKE ciphersuite and sends no PQ KEM extensions,
@@ -1358,7 +1362,7 @@ int main(int argc, char **argv)
             size_t client_hello_len = sizeof(client_hello_message);
 
             EXPECT_SUCCESS(negotiate_kem(NULL, 0, client_hello_message, client_hello_len,
-                                         "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R2, &piped_io));
+                                         "KMS-PQ-TLS-1-0-2020-02", TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R2, &io_pair));
         }
         {
             /* Expect NULL KEM - client requests SIKE ciphersuite but sends only PQ KEM extensions
@@ -1400,7 +1404,7 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2020-02", -1, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2020-02", -1, &io_pair));
         }
         {
             /* Expect NULL KEM - client sends PQ KEM extension with BIKE extensions, but requests SIKE ciphersuite;
@@ -1442,7 +1446,7 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2019-06", -1, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2019-06", -1, &io_pair));
         }
         {
             /* Expect NULL KEM - client sends PQ KEM extensions for round 2 only; the server is using the
@@ -1455,7 +1459,7 @@ int main(int argc, char **argv)
                     /* KEM names len */
                     0x00, 0x04,
                     /* SIKE_P434_R2 */
-                    0x00, 0x10,
+                    0x00, 0x13,
                     /* BIKE1_L1_R2 */
                     0x00, 0x0D,
             };
@@ -1484,11 +1488,12 @@ int main(int argc, char **argv)
 
             EXPECT_SUCCESS(
                     negotiate_kem(client_extensions, client_extensions_len, client_hello_message, client_hello_len,
-                                  "KMS-PQ-TLS-1-0-2019-06", -1, &piped_io));
+                                  "KMS-PQ-TLS-1-0-2019-06", -1, &io_pair));
         }
     }
+#endif
 
-    EXPECT_SUCCESS(s2n_piped_io_close(&piped_io));
+    EXPECT_SUCCESS(s2n_io_pair_close(&io_pair));
     free(cert_chain);
     free(private_key);
     END_TEST();

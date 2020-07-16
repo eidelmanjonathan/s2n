@@ -73,8 +73,8 @@ int main(int argc, char **argv)
 
     BEGIN_TEST();
 
-    struct s2n_test_piped_io piped_io;
-    EXPECT_SUCCESS(s2n_piped_io_init_non_blocking(&piped_io));
+    struct s2n_test_io_pair io_pair;
+    EXPECT_SUCCESS(s2n_io_pair_init_non_blocking(&io_pair));
 
     /* Skip the test when running under valgrind or address sanitizer, as those tools
      * impact the memory usage. */
@@ -135,7 +135,7 @@ int main(int argc, char **argv)
     EXPECT_NOT_EQUAL(vm_data_after_allocation, -1);
 
     for (int i = 0; i < connectionsToUse; i++) {
-        EXPECT_SUCCESS(s2n_connections_set_piped_io(clients[i], servers[i], &piped_io));
+        EXPECT_SUCCESS(s2n_connections_set_io_pair(clients[ i ], servers[ i ], &io_pair));
 
         EXPECT_SUCCESS(s2n_negotiate_test_server_and_client(servers[i], clients[i]));
     }
@@ -162,7 +162,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_free(servers[i]));
     }
 
-    EXPECT_SUCCESS(s2n_piped_io_close(&piped_io));
+    EXPECT_SUCCESS(s2n_io_pair_close(&io_pair));
     EXPECT_SUCCESS(s2n_cert_chain_and_key_free(chain_and_key));
     EXPECT_SUCCESS(s2n_config_free(server_config));
     EXPECT_SUCCESS(s2n_config_free(client_config));
@@ -172,16 +172,14 @@ int main(int argc, char **argv)
     free(clients);
     free(servers);
 
-#if 0
-    fprintf(stdout, "\n");
-    fprintf(stdout, "VmData initial:              %10zu\n", vm_data_initial);
-    fprintf(stdout, "VmData after allocations:    %10zu\n", vm_data_after_allocation);
-    fprintf(stdout, "VmData after handshakes:     %10zu\n", vm_data_after_handshakes);
-    fprintf(stdout, "VmData after free handshake: %10zu\n", vm_data_after_free_handshake);
-    fprintf(stdout, "VmData after release:        %10zu\n", vm_data_after_release_buffers);
-    fprintf(stdout, "Max VmData diff allowed:     %10zu\n", maxAllowedMemDiff);
-    fprintf(stdout, "Number of connections used:  %10zu\n", connectionsToUse);
-#endif
+    TEST_DEBUG_PRINT("\n");
+    TEST_DEBUG_PRINT("VmData initial:              %10zd\n", vm_data_initial);
+    TEST_DEBUG_PRINT("VmData after allocations:    %10zd\n", vm_data_after_allocation);
+    TEST_DEBUG_PRINT("VmData after handshakes:     %10zd\n", vm_data_after_handshakes);
+    TEST_DEBUG_PRINT("VmData after free handshake: %10zd\n", vm_data_after_free_handshake);
+    TEST_DEBUG_PRINT("VmData after release:        %10zd\n", vm_data_after_release_buffers);
+    TEST_DEBUG_PRINT("Max VmData diff allowed:     %10zd\n", maxAllowedMemDiff);
+    TEST_DEBUG_PRINT("Number of connections used:  %10zu\n", connectionsToUse);
 
     EXPECT_TRUE(vm_data_after_allocation - vm_data_initial < maxAllowedMemDiff);
     EXPECT_TRUE(vm_data_after_handshakes - vm_data_initial < maxAllowedMemDiff);

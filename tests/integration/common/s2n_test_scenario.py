@@ -25,6 +25,7 @@ import os
 from enum import Enum as BaseEnum
 from multiprocessing.pool import ThreadPool
 
+
 class Enum(BaseEnum):
 
     def __str__(self):
@@ -55,6 +56,29 @@ class Mode(Enum):
 
     def other(self):
         return Mode.server if self.is_client() else Mode.client
+
+
+class Cert():
+    def __init__(self, name, prefix, location="../pems/"):
+        self.name = name
+        self.cert = location + prefix + "_cert.pem"
+        self.key = location + prefix + "_key.pem"
+
+    def valid_for(self, version):
+        # RSA PSS is currently only supported with libcryto openssl 1.1.1 in s2n
+        if self.name.startswith("RSA"):
+            return get_libcrypto() == "openssl-1.1.1"
+
+        return True
+
+    def __str__(self):
+        return self.name
+
+ALL_CERTS = [
+    Cert("RSA_2048", "rsa_2048_pkcs1"),
+    Cert("ECDSA_256", "ecdsa_p256_pkcs1"),
+    Cert("ECDSA_384", "ecdsa_p384_pkcs1"),
+]
 
 
 class Cipher():
@@ -90,7 +114,8 @@ ALL_CIPHERS = [
     Cipher("TLS_AES_128_GCM_SHA256", Version.TLS13)
 ]
 
-# Older Openssl and libressl do not support CHACHA20
+# Older versions of Openssl do not support CHACHA20. Current versions of LibreSSL and BoringSSL use a different API
+# that is unsupported by s2n.
 LEGACY_COMPATIBLE_CIPHERS = list(filter(lambda x: "CHACHA20" not in x.name, ALL_CIPHERS))
 
 ALL_CIPHERS_PER_LIBCRYPTO_VERSION = {
@@ -98,10 +123,47 @@ ALL_CIPHERS_PER_LIBCRYPTO_VERSION = {
     "openssl-1.0.2"         : LEGACY_COMPATIBLE_CIPHERS,
     "openssl-1.0.2-fips"    : LEGACY_COMPATIBLE_CIPHERS,
     "libressl"              : LEGACY_COMPATIBLE_CIPHERS,
+    "boringssl"             : LEGACY_COMPATIBLE_CIPHERS,
 }
 
+class Curve():
+    def __init__(self, name, min_version):
+        self.name = name
+        self.min_version = min_version
 
-ALL_CURVES = ["P-256", "P-384"]
+    def valid_for(self, version):
+        if not version:
+            version = Version.default()
+
+        if version.value < self.min_version.value:
+            return False
+
+        return True
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def all(cls):
+        return ALL_CURVES_PER_LIBCRYPTO_VERSION[get_libcrypto()]
+
+ALL_CURVES = [
+    Curve("X25519", Version.TLS13),
+    Curve("P-256", Version.SSLv3),
+    Curve("P-384", Version.SSLv3)
+]
+
+# Older versions of Openssl, do not support X25519. Current versions of LibreSSL and BoringSSL use a different API
+# that is unsupported by s2n.
+LEGACY_COMPATIBLE_CURVES = list(filter(lambda x: "X25519" not in x.name, ALL_CURVES))
+
+ALL_CURVES_PER_LIBCRYPTO_VERSION = {
+    "openssl-1.1.1"         : ALL_CURVES,
+    "openssl-1.0.2"         : LEGACY_COMPATIBLE_CURVES,
+    "openssl-1.0.2-fips"    : LEGACY_COMPATIBLE_CURVES,
+    "libressl"              : LEGACY_COMPATIBLE_CURVES,
+    "boringssl"             : LEGACY_COMPATIBLE_CURVES,
+}
 
 
 class Scenario:
@@ -111,7 +173,8 @@ class Scenario:
 
     """
 
-    def __init__(self, s2n_mode, host, port, version=None, cipher=None, curve=None, s2n_flags=[], peer_flags=[]):
+    def __init__(self, s2n_mode, host, port, version=None, cipher=None, curve=None,
+                 cert=ALL_CERTS[0], s2n_flags=[], peer_flags=[]):
         """
         Args:
             s2n_mode: whether s2n should act as a client or server.
@@ -131,14 +194,16 @@ class Scenario:
         self.version = version
         self.cipher = cipher
         self.curve = curve
+        self.cert = cert
         self.s2n_flags = s2n_flags
         self.peer_flags = peer_flags
 
     def __str__(self):
         version = self.version if self.version else "DEFAULT"
         cipher = self.cipher if self.cipher else "ANY"
-        result = "Mode:%s %s Version:%s Curve:%s Cipher:%s" % \
-            (self.s2n_mode, " ".join(self.s2n_flags), str(version).ljust(7), self.curve, str(cipher).ljust(30))
+        result = "Mode:%s %s Version:%s Curve:%s Cert:%s Cipher:%s" % \
+            (self.s2n_mode, " ".join(self.s2n_flags), str(version).ljust(7), self.curve,
+             str(self.cert).ljust(10), str(cipher).ljust(30))
 
         return result.ljust(100)
 
@@ -148,39 +213,59 @@ def __create_thread_pool():
     threadpool = ThreadPool(processes=threadpool_size)
     return threadpool
 
+def scenario_runner(test_func, scenario):
+    def runner():
+        result = test_func(scenario)
+        # print results
+        print("%s %s" % (str(scenario), str(result).rstrip()))
+        return result
+
+    return runner
 
 def run_scenarios(test_func, scenarios):
-    failed = 0
     threadpool = __create_thread_pool()
     results = {}
 
     print("\tRunning scenarios: " + str(len(scenarios)))
 
     for scenario in scenarios:
-        async_result = threadpool.apply_async(test_func, (scenario,))
+        async_result = threadpool.apply_async(scenario_runner(test_func, scenario))
         results.update({scenario: async_result})
 
     threadpool.close()
     threadpool.join()
 
-    results.update((k, v.get()) for k,v in results.items())
+    # get results, applying a 5 seconds limit for each task
+    results.update((k, v.get(5000)) for k,v in results.items())
+
+    failed = 0
+    print("\tScenarios ran. Reprinting failed tasks if any...")
     # Sort the results so that failures appear at the end
     sorted_results = sorted(results.items(), key=lambda x: not x[1].is_success())
     for scenario, result in sorted_results:
-        print("%s %s" % (str(scenario), str(result).rstrip()))
         if not result.is_success():
             failed += 1
+            print("%s %s" % (str(scenario), str(result).rstrip()))
+
+    print("\tDone")
 
     return failed
 
 
-def get_scenarios(host, start_port, s2n_modes=Mode.all(), versions=[None], ciphers=[None], curves=ALL_CURVES, s2n_flags=[], peer_flags=[]):
+def get_scenarios(host, start_port, s2n_modes=Mode.all(), versions=[None], ciphers=[None],
+                  curves=Curve.all(), certs=ALL_CERTS, s2n_flags=[], peer_flags=[]):
     port = start_port
     scenarios = []
 
-    combos = itertools.product(versions, s2n_modes, ciphers, curves)
-    for (version, s2n_mode, cipher, curve) in combos:
+    combos = itertools.product(versions, s2n_modes, ciphers, curves, certs)
+    for (version, s2n_mode, cipher, curve, cert) in combos:
         if cipher and not cipher.valid_for(version):
+            continue
+
+        if curve and not curve.valid_for(version):
+            continue
+
+        if cert and not cert.valid_for(version):
             continue
 
         for s2n_mode in s2n_modes:
@@ -191,9 +276,9 @@ def get_scenarios(host, start_port, s2n_modes=Mode.all(), versions=[None], ciphe
                 version=version,
                 cipher=cipher,
                 curve=curve,
+                cert=cert,
                 s2n_flags=s2n_flags,
                 peer_flags=peer_flags))
             port += 1
-        
-    return scenarios
 
+    return scenarios

@@ -19,8 +19,8 @@ set -ex
 # Install missing test dependencies. If the install directory already exists, cached artifacts will be used
 # for that dependency.
 
-if [[ ! -d test-deps ]]; then 
-    mkdir test-deps ; 
+if [[ ! -d test-deps ]]; then
+    mkdir test-deps ;
 fi
 
 #Install & Run shell check before installing dependencies
@@ -29,8 +29,8 @@ codebuild/bin/install_shellcheck.sh
 echo "Running ShellCheck..."
 find ./codebuild -type f -name '*.sh' -exec shellcheck -Cnever -s bash {} \;
 
-# Only run ubuntu install outside of CodeBuild
 if [[ "$OS_NAME" == "linux" ]]; then
+    # Only run ubuntu install outside of CodeBuild
     if [ ! "${CODEBUILD_BUILD_NUMBER}" ]; then
         codebuild/bin/install_ubuntu_dependencies.sh;
     fi

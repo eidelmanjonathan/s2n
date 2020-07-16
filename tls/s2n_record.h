@@ -19,6 +19,8 @@
 
 #include "s2n_connection.h"
 
+#define TLS13_CONTENT_TYPE_LENGTH 1
+
 extern int s2n_record_max_write_payload_size(struct s2n_connection *conn);
 extern int s2n_record_min_write_payload_size(struct s2n_connection *conn);
 extern int s2n_record_rounded_write_payload_size(struct s2n_connection *conn, uint16_t size_without_overhead);
@@ -26,7 +28,7 @@ extern int s2n_record_write(struct s2n_connection *conn, uint8_t content_type, s
 extern int s2n_record_writev(struct s2n_connection *conn, uint8_t content_type, const struct iovec *in, int in_count, size_t offs, size_t to_write);
 extern int s2n_record_parse(struct s2n_connection *conn);
 extern int s2n_record_header_parse(struct s2n_connection *conn, uint8_t * content_type, uint16_t * fragment_length);
-extern int s2n_parse_record_type(struct s2n_stuffer *stuffer, uint8_t * record_type);
+extern int s2n_tls13_parse_record_type(struct s2n_stuffer *stuffer, uint8_t * record_type);
 extern int s2n_sslv2_record_header_parse(struct s2n_connection *conn, uint8_t * record_type, uint8_t * client_protocol_version, uint16_t * fragment_length);
 extern int s2n_verify_cbc(struct s2n_connection *conn, struct s2n_hmac_state *hmac, struct s2n_blob *decrypted);
 extern int s2n_aead_aad_init(const struct s2n_connection *conn, uint8_t * sequence_number, uint8_t content_type, uint16_t record_length, struct s2n_stuffer *ad);

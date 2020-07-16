@@ -41,7 +41,7 @@ def sigalg_str_from_list(sigalgs):
 def try_gnutls_handshake(endpoint, port, priority_str, mfl_extension_test, enter_fips_mode=False):
     # Fire up s2nd
     s2nd_cmd = ["../../bin/s2nd", str(endpoint), str(port)]
-    s2nd_ciphers = "test_all"
+    s2nd_ciphers = "test_all_tls12"
 
     if enter_fips_mode == True:
         s2nd_ciphers = "test_all_fips"
@@ -150,7 +150,7 @@ def main():
     parser = argparse.ArgumentParser(description='Runs TLS server integration tests against s2nd using gnutls-cli')
     parser.add_argument('host', help='The host for s2nd to bind to')
     parser.add_argument('port', type=int, help='The port for s2nd to bind to')
-    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=['openssl-1.0.2', 'openssl-1.0.2-fips', 'openssl-1.1.1', 'libressl'],
+    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=S2N_LIBCRYPTO_CHOICES,
             help="""The Libcrypto that s2n was built with. s2n supports different cipher suites depending on
                     libcrypto version. Defaults to openssl-1.1.1.""")
     args = parser.parse_args()

@@ -18,14 +18,32 @@
 #include <stdint.h>
 #include <s2n.h>
 
-#include "tls/s2n_cipher_suites.h"
 #include "tls/s2n_crypto.h"
 #include "tls/s2n_signature_algorithms.h"
 #include "tls/s2n_tls_parameters.h"
 
 #include "stuffer/s2n_stuffer.h"
 
+#include "crypto/s2n_certificate.h"
 #include "crypto/s2n_hash.h"
+
+/* From RFC 8446: https://tools.ietf.org/html/rfc8446#appendix-B.3 */
+#define TLS_HELLO_REQUEST              0
+#define TLS_CLIENT_HELLO               1
+#define TLS_SERVER_HELLO               2
+#define TLS_SERVER_NEW_SESSION_TICKET  4
+#define TLS_ENCRYPTED_EXTENSIONS       8
+#define TLS_CERTIFICATE               11
+#define TLS_SERVER_KEY                12
+#define TLS_CERT_REQ                  13
+#define TLS_SERVER_HELLO_DONE         14
+#define TLS_CERT_VERIFY               15
+#define TLS_CLIENT_KEY                16
+#define TLS_FINISHED                  20
+#define TLS_SERVER_CERT_STATUS        22
+#define TLS_SERVER_SESSION_LOOKUP     23
+#define TLS_KEY_UPDATE                24
+#define TLS_MESSAGE_HASH             254
 
 /* This is the list of message types that we support */
 typedef enum {
@@ -48,9 +66,17 @@ typedef enum {
     /* TLS1.3 message types. Defined: https://tools.ietf.org/html/rfc8446#appendix-B.3 */
     ENCRYPTED_EXTENSIONS,
     SERVER_CERT_VERIFY,
+    HELLO_RETRY_MSG,
 
     APPLICATION_DATA,
 } message_type_t;
+
+typedef enum {
+    S2N_ASYNC_NOT_INVOKED = 0,
+    S2N_ASYNC_INVOKING_CALLBACK,
+    S2N_ASYNC_INVOKED_WAITING,
+    S2N_ASYNC_INVOKED_COMPLETE,
+} s2n_async_state;
 
 struct s2n_handshake_parameters {
     /* Signature/hash algorithm pairs offered by the client in the signature_algorithms extension */
@@ -84,8 +110,8 @@ struct s2n_handshake_parameters {
      *    - Client only supports RSA ciphers
      *    - certB will be selected.
      */
-    struct s2n_cert_chain_and_key *exact_sni_matches[S2N_AUTHENTICATION_METHOD_SENTINEL];
-    struct s2n_cert_chain_and_key *wc_sni_matches[S2N_AUTHENTICATION_METHOD_SENTINEL];
+    struct s2n_cert_chain_and_key *exact_sni_matches[S2N_CERT_TYPE_COUNT];
+    struct s2n_cert_chain_and_key *wc_sni_matches[S2N_CERT_TYPE_COUNT];
     uint8_t exact_sni_match_exists;
     uint8_t wc_sni_match_exists;
 };
@@ -109,6 +135,7 @@ struct s2n_handshake {
     struct s2n_hash_state prf_sha1_hash_copy;
     /*Used for TLS 1.2 PRF */
     struct s2n_hash_state prf_tls12_hash_copy;
+    struct s2n_hash_state server_finished_copy;
 
     /* Hash algorithms required for this handshake. The set of required hashes can be reduced as session parameters are
      * negotiated, i.e. cipher suite and protocol version.
@@ -117,12 +144,6 @@ struct s2n_handshake {
 
     uint8_t server_finished[S2N_TLS_SECRET_LEN];
     uint8_t client_finished[S2N_TLS_SECRET_LEN];
-
-    /* Indicates the CLIENT_HELLO message has been completely received */
-    unsigned client_hello_received:1;
-
-    /* Indicates the handshake blocked while trying to read data, and has been paused */
-    unsigned paused:1;
 
     /* Handshake type is a bitset, with the following
        bit positions */
@@ -147,19 +168,33 @@ struct s2n_handshake {
 
 /* Handshake should request a Client Certificate */
 #define CLIENT_AUTH                 0x10
+#define IS_CLIENT_AUTH_HANDSHAKE( type )   ( (type) & CLIENT_AUTH )
 
 /* Handshake requested a Client Certificate but did not get one */
 #define NO_CLIENT_CERT              0x40
+#define IS_CLIENT_AUTH_NO_CERT( type )   ( IS_CLIENT_AUTH_HANDSHAKE( (type) ) && ( (type) & NO_CLIENT_CERT) )
 
 /* Session Resumption via session-tickets */
 #define WITH_SESSION_TICKET         0x20
 #define IS_ISSUING_NEW_SESSION_TICKET( type )   ( (type) & WITH_SESSION_TICKET )
 
+/* A HelloRetryRequest was needed to proceed with the handshake */
+#define HELLO_RETRY_REQUEST         0x80
+
     /* Which handshake message number are we processing */
     int message_number;
 
+    /* State of the async pkey operation during handshake */
+    s2n_async_state async_state;
+
+    /* Indicates the CLIENT_HELLO message has been completely received */
+    unsigned client_hello_received:1;
+
+    /* Indicates the handshake blocked while trying to read or write data, and has been paused */
+    unsigned paused:1;
+
     /* Set to 1 if the RSA verification failed */
-    uint8_t rsa_failed;
+    unsigned rsa_failed:1;
 };
 
 extern message_type_t s2n_conn_get_current_message_type(struct s2n_connection *conn);
@@ -171,5 +206,10 @@ extern int s2n_handshake_require_all_hashes(struct s2n_handshake *handshake);
 extern uint8_t s2n_handshake_is_hash_required(struct s2n_handshake *handshake, s2n_hash_algorithm hash_alg);
 extern int s2n_conn_update_required_handshake_hashes(struct s2n_connection *conn);
 extern int s2n_handshake_get_hash_state(struct s2n_connection *conn, s2n_hash_algorithm hash_alg, struct s2n_hash_state *hash_state);
+extern int s2n_handshake_reset_hash_state(struct s2n_connection *conn, s2n_hash_algorithm hash_alg);
 extern int s2n_conn_find_name_matching_certs(struct s2n_connection *conn);
 extern int s2n_create_wildcard_hostname(struct s2n_stuffer *hostname, struct s2n_stuffer *output);
+struct s2n_cert_chain_and_key *s2n_get_compatible_cert_chain_and_key(struct s2n_connection *conn, const s2n_pkey_type cert_type);
+int s2n_conn_post_handshake_hashes_update(struct s2n_connection *conn);
+int s2n_conn_pre_handshake_hashes_update(struct s2n_connection *conn);
+int s2n_conn_update_handshake_hashes(struct s2n_connection *conn, struct s2n_blob *data);

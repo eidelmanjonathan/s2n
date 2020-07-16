@@ -34,7 +34,7 @@ bitcode :
 	${MAKE} -C tests/saw bitcode
 
 .PHONY : bc
-bc: 
+bc:
 	${MAKE} -C crypto bc
 	${MAKE} -C stuffer bc
 	${MAKE} -C tls bc
@@ -44,12 +44,20 @@ bc:
 sike_r1_bc: bc
 	${MAKE} -C pq-crypto sike_r1_bc
 
+.PHONY : sike_r2_bc
+sike_r2_bc: bc
+	${MAKE} -C pq-crypto sike_r2_bc
+
 .PHONY : bike_r1_bc
 bike_r1_bc: bc
 	${MAKE} -C pq-crypto bike_r1_bc
 
+.PHONY : bike_r2_bc
+bike_r2_bc: bc
+	${MAKE} -C pq-crypto bike_r2_bc
+
 .PHONY : saw
-saw : bc 
+saw : bc
 	$(MAKE) -C tests/saw
 
 include s2n.mk
@@ -72,6 +80,10 @@ bin: libs
 integration: bin
 	$(MAKE) -C tests integration
 
+.PHONY : integrationv2
+integrationv2: bin
+	$(MAKE) -C tests integrationv2
+
 .PHONY : valgrind
 valgrind: bin
 	$(MAKE) -C tests valgrind
@@ -84,13 +96,17 @@ fuzz : fuzz-osx
 endif
 
 .PHONY : fuzz-osx
-fuzz-osx : 
+fuzz-osx :
 	@echo "\033[33;1mSKIPPED\033[0m Fuzzing is not supported on \"$$(uname -mprs)\" at this time."
 
 .PHONY : fuzz-linux
 fuzz-linux : export S2N_UNSAFE_FUZZING_MODE = 1
 fuzz-linux : bin
 	$(MAKE) -C tests fuzz
+
+.PHONY : benchmark
+benchmark: bin
+	$(MAKE) -C tests benchmark
 
 .PHONY : coverage
 coverage: run-gcov run-lcov run-genhtml
@@ -136,6 +152,13 @@ indent:
 
 .PHONY : pre_commit_check
 pre_commit_check: all indent clean
+
+# TODO use awslabs instead
+DEV_IMAGE ?= camshaft/s2n-dev
+DEV_VERSION ?= ubuntu_18.04_openssl-1.1.1_gcc9
+
+dev:
+	@docker run -it --rm --ulimit memlock=-1 -v `pwd`:/home/s2n-dev/s2n $(DEV_IMAGE):$(DEV_VERSION)
 
 .PHONY : clean
 clean:

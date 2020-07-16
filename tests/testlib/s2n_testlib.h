@@ -38,22 +38,28 @@ void s2n_print_connection(struct s2n_connection *conn, const char *marker);
 
 int s2n_connection_set_io_stuffers(struct s2n_stuffer *input, struct s2n_stuffer *output, struct s2n_connection *conn);
 
-struct s2n_test_piped_io {
-    int client_read;
-    int client_write;
-    int server_read;
-    int server_write;
+struct s2n_test_io_pair {
+    int client;
+    int server;
 };
-int s2n_piped_io_init(struct s2n_test_piped_io *piped_io);
-int s2n_piped_io_init_non_blocking(struct s2n_test_piped_io *piped_io);
-int s2n_piped_io_close(struct s2n_test_piped_io *piped_io);
-int s2n_piped_io_close_one_end(struct s2n_test_piped_io *piped_io, int mode_to_close);
+int s2n_io_pair_init(struct s2n_test_io_pair *io_pair);
+int s2n_io_pair_init_non_blocking(struct s2n_test_io_pair *io_pair);
+int s2n_io_pair_close(struct s2n_test_io_pair *io_pair);
+int s2n_io_pair_close_one_end(struct s2n_test_io_pair *io_pair, int mode_to_close);
+int s2n_io_pair_shutdown_one_end(struct s2n_test_io_pair *io_pair, int mode_to_close, int how);
 
-int s2n_connection_set_piped_io(struct s2n_connection *conn, struct s2n_test_piped_io* piped_io);
-int s2n_connections_set_piped_io(struct s2n_connection *client, struct s2n_connection *server, struct s2n_test_piped_io* piped_io);
+int s2n_connection_set_io_pair(struct s2n_connection *conn, struct s2n_test_io_pair *io_pair);
+int s2n_connections_set_io_pair(struct s2n_connection *client, struct s2n_connection *server,
+                                struct s2n_test_io_pair *io_pair);
 
 int s2n_fd_set_blocking(int fd);
 int s2n_fd_set_non_blocking(int fd);
+
+int s2n_set_connection_hello_retry_flags(struct s2n_connection *conn);
+int s2n_connection_allow_all_response_extensions(struct s2n_connection *conn);
+int s2n_connection_set_all_protocol_versions(struct s2n_connection *conn, uint8_t version);
+
+int s2n_unsafe_set_drbg_seed(const struct s2n_blob *seed);
 
 #define S2N_MAX_TEST_PEM_SIZE 4096
 
@@ -64,9 +70,11 @@ int s2n_fd_set_non_blocking(int fd);
 #define S2N_RSA_2048_PKCS1_CERT_CHAIN   "../pems/rsa_2048_pkcs1_cert.pem"
 
 #define S2N_RSA_2048_PKCS1_LEAF_CERT    "../pems/rsa_2048_pkcs1_leaf.pem"
+#define S2N_ECDSA_P256_PKCS1_CERT_CHAIN "../pems/ecdsa_p256_pkcs1_cert.pem"
 #define S2N_ECDSA_P384_PKCS1_CERT_CHAIN "../pems/ecdsa_p384_pkcs1_cert.pem"
 #define S2N_RSA_CERT_CHAIN_CRLF         "../pems/rsa_2048_pkcs1_cert_crlf.pem"
 #define S2N_RSA_KEY_CRLF                "../pems/rsa_2048_pkcs1_key_crlf.pem"
+#define S2N_ECDSA_P256_PKCS1_KEY        "../pems/ecdsa_p256_pkcs1_key.pem"
 #define S2N_ECDSA_P384_PKCS1_KEY        "../pems/ecdsa_p384_pkcs1_key.pem"
 #define S2N_RSA_2048_PKCS1_KEY          "../pems/rsa_2048_pkcs1_key.pem"
 #define S2N_RSA_2048_PKCS8_KEY          "../pems/rsa_2048_pkcs8_key.pem"
@@ -92,7 +100,6 @@ int s2n_fd_set_non_blocking(int fd);
 #define S2N_LONG_BASE64_LINES_CERT_CHAIN       "../pems/rsa_2048_varying_base64_len_cert.pem"
 /* Missing line endings between PEM encapsulation boundaries */
 #define S2N_MISSING_LINE_ENDINGS_CERT_CHAIN    "../pems/rsa_2048_missing_line_endings_cert.pem"
-
 
 /* Illegally formatted PEMs */
 #define S2N_INVALID_HEADER_CERT_CHAIN   "../pems/rsa_2048_invalid_header_cert.pem"
@@ -121,10 +128,15 @@ int s2n_fd_set_non_blocking(int fd);
 #define S2N_DEFAULT_TEST_CERT_CHAIN  S2N_RSA_2048_PKCS1_CERT_CHAIN
 #define S2N_DEFAULT_TEST_PRIVATE_KEY S2N_RSA_2048_PKCS1_KEY
 
+#define S2N_DEFAULT_ECDSA_TEST_CERT_CHAIN  S2N_ECDSA_P384_PKCS1_CERT_CHAIN
+#define S2N_DEFAULT_ECDSA_TEST_PRIVATE_KEY S2N_ECDSA_P384_PKCS1_KEY
+
 #define S2N_DEFAULT_TEST_DHPARAMS S2N_DHPARAMS_2048
 
 /* Read a cert given a path into pem_out */
 int s2n_read_test_pem(const char *pem_path, char *pem_out, long int max_size);
+int s2n_test_cert_chain_and_key_new(struct s2n_cert_chain_and_key **chain_and_key,
+        const char *cert_chain_file, const char *private_key_file);
 
 int s2n_negotiate_test_server_and_client(struct s2n_connection *server_conn, struct s2n_connection *client_conn);
 int s2n_shutdown_test_server_and_client(struct s2n_connection *server_conn, struct s2n_connection *client_conn);
@@ -154,3 +166,7 @@ int s2n_test_hybrid_ecdhe_kem_with_kat(const struct s2n_kem *kem, struct s2n_cip
 } while (0)
 
 int s2n_public_ecc_keys_are_equal(struct s2n_ecc_evp_params *params_1, struct s2n_ecc_evp_params *params_2);
+
+extern const s2n_parsed_extension EMPTY_PARSED_EXTENSIONS[S2N_PARSED_EXTENSIONS_COUNT];
+#define EXPECT_PARSED_EXTENSION_LIST_EMPTY(list) EXPECT_BYTEARRAY_EQUAL(list.parsed_extensions, EMPTY_PARSED_EXTENSIONS, sizeof(EMPTY_PARSED_EXTENSIONS))
+#define EXPECT_PARSED_EXTENSION_LIST_NOT_EMPTY(list) EXPECT_BYTEARRAY_NOT_EQUAL(list.parsed_extensions, EMPTY_PARSED_EXTENSIONS, sizeof(EMPTY_PARSED_EXTENSIONS))

@@ -39,7 +39,7 @@ static int s2n_stuffer_pem_read_encapsulation_line(struct s2n_stuffer *pem, cons
     GUARD(s2n_stuffer_skip_to_char(pem, S2N_PEM_DELIMTER_CHAR));
 
     /* Ensure between 1 and 64 '-' chars at start of line */
-    GUARD(s2n_stuffer_skip_expected_char(pem, S2N_PEM_DELIMTER_CHAR, S2N_PEM_DELIMITER_MIN_COUNT, S2N_PEM_DELIMITER_MAX_COUNT));
+    GUARD(s2n_stuffer_skip_expected_char(pem, S2N_PEM_DELIMTER_CHAR, S2N_PEM_DELIMITER_MIN_COUNT, S2N_PEM_DELIMITER_MAX_COUNT, NULL));
 
     /* Ensure next string in stuffer is "BEGIN " or "END " */
     GUARD(s2n_stuffer_read_expected_str(pem, encap_marker));
@@ -48,11 +48,11 @@ static int s2n_stuffer_pem_read_encapsulation_line(struct s2n_stuffer *pem, cons
     GUARD(s2n_stuffer_read_expected_str(pem, keyword));
 
     /* Ensure between 1 and 64 '-' chars at end of line */
-    GUARD(s2n_stuffer_skip_expected_char(pem, S2N_PEM_DELIMTER_CHAR, S2N_PEM_DELIMITER_MIN_COUNT, S2N_PEM_DELIMITER_MAX_COUNT));
+    GUARD(s2n_stuffer_skip_expected_char(pem, S2N_PEM_DELIMTER_CHAR, S2N_PEM_DELIMITER_MIN_COUNT, S2N_PEM_DELIMITER_MAX_COUNT, NULL));
 
     /* Check for missing newline between dashes case: "-----END CERTIFICATE----------BEGIN CERTIFICATE-----" */
     if (strncmp(encap_marker, S2N_PEM_END_TOKEN, strlen(S2N_PEM_END_TOKEN)) == 0
-            && s2n_stuffer_peek_check_for_str(pem, S2N_PEM_BEGIN_TOKEN)) {
+            && s2n_stuffer_peek_check_for_str(pem, S2N_PEM_BEGIN_TOKEN) == S2N_SUCCESS) {
         /* Rewind stuffer by 1 byte before BEGIN, so that next read will find the dash before the BEGIN */
         GUARD(s2n_stuffer_rewind_read(pem, 1));
     }
@@ -79,16 +79,18 @@ static int s2n_stuffer_pem_read_contents(struct s2n_stuffer *pem, struct s2n_stu
     struct s2n_stuffer base64_stuffer = {0};
     GUARD(s2n_stuffer_init(&base64_stuffer, &base64__blob));
 
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(pem));
     while (1) {
-        char c;
+        /* We need a byte... */
+        ENSURE_POSIX(s2n_stuffer_data_available(pem) >= 1, S2N_ERR_STUFFER_OUT_OF_DATA);
+
         /* Peek to see if the next char is a dash, meaning end of pem_contents */
-        GUARD(s2n_stuffer_peek_char(pem, &c));
+        char c = pem->blob.data[pem->read_cursor];
         if (c == '-') {
             break;
-        } else {
-            /* Else, move read pointer forward by 1 byte since we will be consuming it. */
-             GUARD(s2n_stuffer_skip_read(pem, 1));
         }
+        /* Else, move read pointer forward by 1 byte since we will be consuming it. */
+        pem->read_cursor += 1;
 
          /* Skip non-base64 characters */
         if (!s2n_is_base64_char(c)) {
@@ -123,12 +125,12 @@ static int s2n_stuffer_data_from_pem(struct s2n_stuffer *pem, struct s2n_stuffer
 
 int s2n_stuffer_private_key_from_pem(struct s2n_stuffer *pem, struct s2n_stuffer *asn1) {
     int rc;
-   
+
     rc = s2n_stuffer_data_from_pem(pem, asn1, S2N_PEM_PKCS1_RSA_PRIVATE_KEY);
     if (!rc) {
         return rc;
-    } 
-    
+    }
+
     s2n_stuffer_reread(pem);
     s2n_stuffer_reread(asn1);
 
@@ -142,12 +144,12 @@ int s2n_stuffer_private_key_from_pem(struct s2n_stuffer *pem, struct s2n_stuffer
         s2n_stuffer_reread(pem);
     }
     s2n_stuffer_wipe(asn1);
-    
+
     rc = s2n_stuffer_data_from_pem(pem, asn1, S2N_PEM_PKCS1_EC_PRIVATE_KEY);
     if (!rc) {
         return rc;
     }
-    
+
     /* If it does not match either format, try PKCS#8 */
     s2n_stuffer_reread(pem);
     s2n_stuffer_reread(asn1);

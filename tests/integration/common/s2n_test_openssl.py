@@ -19,7 +19,6 @@ Common functions used to create test openssl servers and clients.
 
 import common.s2n_test_common as util
 from common.s2n_test_scenario import Mode, Version
-from s2n_test_constants import TEST_ECDSA_CERT, TEST_ECDSA_KEY
 from time import sleep
 
 
@@ -45,8 +44,8 @@ def get_openssl_cmd(scenario):
     else:
         openssl_cmd.extend(["s_client", "-connect", str(scenario.host) + ":" + str(scenario.port)])
 
-    openssl_cmd.extend(["-cert", TEST_ECDSA_CERT,
-                        "-key", TEST_ECDSA_KEY,
+    openssl_cmd.extend(["-cert", scenario.cert.cert,
+                        "-key", scenario.cert.key,
                         "-tlsextdebug"])
 
     if scenario.version:
@@ -55,7 +54,7 @@ def get_openssl_cmd(scenario):
     if scenario.cipher:
         if scenario.version is Version.TLS13:
             openssl_cmd.extend(["-ciphersuites", str(scenario.cipher)])
-            openssl_cmd.extend(["-curves", scenario.curve])
+            openssl_cmd.extend(["-curves", str(scenario.curve)])
         else:
             openssl_cmd.extend(["cipher", str(scenario.cipher)])
 
@@ -68,7 +67,7 @@ def get_openssl(scenario):
     openssl_cmd = get_openssl_cmd(scenario)
     openssl = util.get_process(openssl_cmd)
     
-    if not util.wait_for_output(openssl, OPENSSL_SIGNALS[scenario.s2n_mode.other()]):
+    if not util.wait_for_output(openssl.stdout, OPENSSL_SIGNALS[scenario.s2n_mode.other()]):
         raise AssertionError("openssl %s: %s" % (scenario.s2n_mode.other(), util.get_error(openssl)))
 
     # Openssl outputs the success signal BEFORE binding the socket, so wait a little
@@ -77,6 +76,6 @@ def get_openssl(scenario):
     return openssl
 
 
-def run_openssl_connection_test(scenarios, test_func=None):
-    return util.run_connection_test(get_openssl, scenarios, test_func)
+def run_openssl_connection_test(scenarios, **kwargs):
+    return util.run_connection_test(get_openssl, scenarios, **kwargs)
 

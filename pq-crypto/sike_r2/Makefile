@@ -16,16 +16,14 @@
 SRCS=fips202.c P434.c
 OBJS=$(SRCS:.c=.o)
 
-# TODO add when ready for SIKE R2 SAW proofs
-#BCS_1=fips202.bc P434.bc
-#BCS=$(addprefix $(BITCODE_DIR), $(BCS_1))
+BCS_1=fips202.bc P434.bc
+BCS=$(addprefix $(BITCODE_DIR), $(BCS_1))
 
 .PHONY : all
 all: $(OBJS)
 
-# TODO add when ready for SIKE R2 SAW proofs
-#.PHONY : bc
-#bc: $(BCS)
+.PHONY : bc
+bc: $(BCS)
 
 include ../../s2n.mk
 
@@ -42,6 +40,11 @@ ifndef S2N_NO_PQ_ASM
 	ifeq ($(TRY_COMPILE_PQ_ASM), 0)
 		ASRC=fp_x64_asm.S
 		OBJS+=$(ASRC:.S=.o)
+
+		TRY_COMPILE_PQ_ASM_ADX := $(shell $(CC) -D_ADX_ -c -o ./fp_x64_asm.o ./fp_x64_asm.S > /dev/null 2>&1; echo $$?)
+		ifeq ($(TRY_COMPILE_PQ_ASM_ADX), 0)
+			CFLAGS += -D_ADX_
+		endif
 	else
 		CFLAGS += -DS2N_NO_PQ_ASM
 	endif

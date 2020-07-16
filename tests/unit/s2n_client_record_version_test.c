@@ -83,11 +83,11 @@ int main(int argc, char **argv)
         };
 
         /* Create nonblocking pipes */
-        struct s2n_test_piped_io piped_io;
-        EXPECT_SUCCESS(s2n_piped_io_init_non_blocking(&piped_io));
+        struct s2n_test_io_pair io_pair;
+        EXPECT_SUCCESS(s2n_io_pair_init_non_blocking(&io_pair));
 
         EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(client_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(client_conn, &io_pair));
 
         EXPECT_NOT_NULL(client_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_set_cipher_preferences(client_config, "test_all"));
@@ -95,7 +95,7 @@ int main(int argc, char **argv)
 
         /* Send the client hello */
         EXPECT_EQUAL(s2n_negotiate(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Read ClientHello s2n wrote */
@@ -104,7 +104,7 @@ int main(int argc, char **argv)
 
         /* we need only first 10 bytes to get to ClientHello protocol version */
         while (buf_occupied < 10) {
-            ssize_t n = read(piped_io.server_read, buf + buf_occupied, sizeof(buf) - buf_occupied);
+            ssize_t n = read(io_pair.server, buf + buf_occupied, sizeof(buf) - buf_occupied);
 
             /* We should be able to read 10 bytes without blocking */
             EXPECT_TRUE(n > 0);
@@ -123,7 +123,7 @@ int main(int argc, char **argv)
 
         /* Read the rest of the pipe */
         while (1) {
-            ssize_t n = read(piped_io.server_read, buf, sizeof(buf));
+            ssize_t n = read(io_pair.server, buf, sizeof(buf));
 
             if (n > 0) {
                 continue;
@@ -136,13 +136,13 @@ int main(int argc, char **argv)
         }
 
         /* Write the server hello */
-        EXPECT_EQUAL(write(piped_io.server_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.server_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.server_write, server_hello_message, sizeof(server_hello_message)), sizeof(server_hello_message));
+        EXPECT_EQUAL(write(io_pair.server, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.server, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.server, server_hello_message, sizeof(server_hello_message)), sizeof(server_hello_message));
 
         /* Verify that we proceed with handshake */
         EXPECT_EQUAL(s2n_negotiate(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Verify that protocol versions are TLS1.2 now */
@@ -152,14 +152,14 @@ int main(int argc, char **argv)
 
         /* Now lets shutdown the connection and verify that alert is sent in record with protocol version TLS1.2 */
         EXPECT_EQUAL(s2n_shutdown(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Receive the next record from client and ensure that record protocol version is TLS1.2 */
         buf_occupied = 0;
         /* We need only first 5 bytes to get to record protocol version */
         while (buf_occupied < 5) {
-            ssize_t n = read(piped_io.server_read, buf + buf_occupied, sizeof(buf) - buf_occupied);
+            ssize_t n = read(io_pair.server, buf + buf_occupied, sizeof(buf) - buf_occupied);
 
             /* We should be able to read 5 bytes without blocking */
             EXPECT_TRUE(n > 0);
@@ -172,7 +172,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_free(client_conn));
         EXPECT_SUCCESS(s2n_config_free(client_config));
 
-        EXPECT_SUCCESS(s2n_piped_io_close(&piped_io));
+        EXPECT_SUCCESS(s2n_io_pair_close(&io_pair));
     }
 
     /* Server negotiates SSLv3 */
@@ -215,11 +215,11 @@ int main(int argc, char **argv)
         };
 
         /* Create nonblocking pipes */
-        struct s2n_test_piped_io piped_io;
-        EXPECT_SUCCESS(s2n_piped_io_init_non_blocking(&piped_io));
+        struct s2n_test_io_pair io_pair;
+        EXPECT_SUCCESS(s2n_io_pair_init_non_blocking(&io_pair));
 
         EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        EXPECT_SUCCESS(s2n_connection_set_piped_io(client_conn, &piped_io));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(client_conn, &io_pair));
 
         EXPECT_NOT_NULL(client_config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_set_cipher_preferences(client_config, "test_all"));
@@ -227,7 +227,7 @@ int main(int argc, char **argv)
 
         /* Send the client hello */
         EXPECT_EQUAL(s2n_negotiate(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Read ClientHello s2n wrote */
@@ -236,7 +236,7 @@ int main(int argc, char **argv)
 
         /* we need only first 10 bytes to get to ClientHello protocol version */
         while (buf_occupied < 10) {
-            ssize_t n = read(piped_io.server_read, buf + buf_occupied, sizeof(buf) - buf_occupied);
+            ssize_t n = read(io_pair.server, buf + buf_occupied, sizeof(buf) - buf_occupied);
 
             /* We should be able to read 10 bytes without blocking */
             EXPECT_TRUE(n > 0);
@@ -255,7 +255,7 @@ int main(int argc, char **argv)
 
         /* Read the rest of the pipe */
         while (1) {
-            ssize_t n = read(piped_io.server_read, buf, sizeof(buf));
+            ssize_t n = read(io_pair.server, buf, sizeof(buf));
 
             if (n > 0) {
                 continue;
@@ -268,13 +268,13 @@ int main(int argc, char **argv)
         }
 
         /* Write the server hello */
-        EXPECT_EQUAL(write(piped_io.server_write, record_header, sizeof(record_header)), sizeof(record_header));
-        EXPECT_EQUAL(write(piped_io.server_write, message_header, sizeof(message_header)), sizeof(message_header));
-        EXPECT_EQUAL(write(piped_io.server_write, server_hello_message, sizeof(server_hello_message)), sizeof(server_hello_message));
+        EXPECT_EQUAL(write(io_pair.server, record_header, sizeof(record_header)), sizeof(record_header));
+        EXPECT_EQUAL(write(io_pair.server, message_header, sizeof(message_header)), sizeof(message_header));
+        EXPECT_EQUAL(write(io_pair.server, server_hello_message, sizeof(server_hello_message)), sizeof(server_hello_message));
 
         /* Verify that we proceed with handshake */
         EXPECT_EQUAL(s2n_negotiate(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Verify that protocol versions are SSLv3 with the exeption of client which supports TLS1.2 */
@@ -284,14 +284,14 @@ int main(int argc, char **argv)
 
         /* Now lets shutdown the connection and verify that alert is sent in record with protocol version SSLv3 */
         EXPECT_EQUAL(s2n_shutdown(client_conn, &client_blocked), -1);
-        EXPECT_EQUAL(s2n_errno, S2N_ERR_BLOCKED);
+        EXPECT_EQUAL(s2n_errno, S2N_ERR_IO_BLOCKED);
         EXPECT_EQUAL(client_blocked, S2N_BLOCKED_ON_READ);
 
         /* Receive the next record from client and ensure that record protocol version is SSLv3 */
         buf_occupied = 0;
         /* We need only first 5 bytes to get to record protocol version */
         while (buf_occupied < 5) {
-            ssize_t n = read(piped_io.server_read, buf + buf_occupied, sizeof(buf) - buf_occupied);
+            ssize_t n = read(io_pair.server, buf + buf_occupied, sizeof(buf) - buf_occupied);
 
             /* We should be able to read 5 bytes without blocking */
             EXPECT_TRUE(n > 0);
@@ -304,7 +304,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_free(client_conn));
         EXPECT_SUCCESS(s2n_config_free(client_config));
 
-        EXPECT_SUCCESS(s2n_piped_io_close(&piped_io));
+        EXPECT_SUCCESS(s2n_io_pair_close(&io_pair));
     }
 
     free(cert_chain);

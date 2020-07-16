@@ -11,13 +11,16 @@
 *.info
 *.profraw
 *.tmp
+*.pyc
 coverage/html/*
 libcrypto-build/*
 libcrypto-root
 libcrypto-root/*
+.litani_cache_dir
 tests/integration/__pycache__
 tests/unit/*_test
 tests/fuzz/fuzz-*.log
+tests/benchmark/*_benchmark
 bin/s2nc
 bin/s2nd
 util-linux-*
@@ -28,3 +31,6 @@ fuzz_dependencies/*
 .travis/.libs/*
 .vscode/
 test-deps/*
+.idea/*
+CMakeCache.txt
+CMakeFiles/*

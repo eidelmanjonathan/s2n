@@ -28,13 +28,17 @@
 #include <getopt.h>
 #include <strings.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include <s2n.h>
 #include "common.h"
 #include <error/s2n_errno.h>
 
+#include "tls/s2n_connection.h"
 #include "tls/s2n_tls13.h"
 #include "utils/s2n_safety.h"
+
+#define S2N_MAX_ECC_CURVE_NAME_LENGTH 10
 
 void usage()
 {
@@ -67,6 +71,10 @@ void usage()
     fprintf(stderr, "    Directory containing hashed trusted certs. If neither -f or -d are specified. System defaults will be used.\n");
     fprintf(stderr, "  -i,--insecure\n");
     fprintf(stderr, "    Turns off certification validation altogether.\n");
+    fprintf(stderr, "  --cert [file path]\n");
+    fprintf(stderr, "    Path to a PEM encoded certificate. Optional. Will only be used for client auth\n");
+    fprintf(stderr, "  --key [file path]\n");
+    fprintf(stderr, "    Path to a PEM encoded private key that matches cert. Will only be used for client auth\n");
     fprintf(stderr, "  -r,--reconnect\n");
     fprintf(stderr, "    Drop and re-make the connection using Session ticket. If session ticket is disabled, then re-make the connection using Session-ID \n");
     fprintf(stderr, "  -T,--no-session-ticket \n");
@@ -77,10 +85,15 @@ void usage()
     fprintf(stderr, "    Set dynamic record timeout threshold\n");
     fprintf(stderr, "  -C,--corked-io\n");
     fprintf(stderr, "    Turn on corked io\n");
-    if (S2N_IN_TEST) {
-        fprintf(stderr, "  --tls13\n");
-        fprintf(stderr, "    Turn on experimental TLS1.3 support for testing.");
-    }
+    fprintf(stderr, "  --tls13\n");
+    fprintf(stderr, "    Turn on experimental TLS1.3 support.\n");
+    fprintf(stderr, "  --non-blocking\n");
+    fprintf(stderr, "    Set the non-blocking flag on the connection's socket.\n");
+    fprintf(stderr, "  -K ,--keyshares\n");
+    fprintf(stderr, "    Colon separated list of curve names.\n"
+                    "    The client will generate keyshares only for the curve names present in the ecc_preferences list configured in the security_policy.\n"
+                    "    The curves currently supported by s2n are: `x25519`, `secp256r1` and `secp384r1`. Note that `none` represents a list of empty keyshares.\n"
+                    "    By default, the client will generate keyshares for all curves present in the ecc_preferences list.\n");
     fprintf(stderr, "\n");
     exit(1);
 }
@@ -100,10 +113,6 @@ static uint8_t unsafe_verify_host(const char *host_name, size_t host_name_len, v
     int equals = strcasecmp(host_name, verify_data->trusted_host);
     return (uint8_t)(equals == 0);
 }
-
-extern void print_s2n_error(const char *app_error);
-extern int echo(struct s2n_connection *conn, int sockfd);
-extern int negotiate(struct s2n_connection *conn);
 
 static void setup_s2n_config(struct s2n_config *config, const char *cipher_prefs, s2n_status_request_type type,
     struct verify_data *unsafe_verify_data, const char *host, const char *alpn_protocols, uint16_t mfl_value) {
@@ -223,6 +232,10 @@ int main(int argc, char *const *argv)
     const char *server_name = NULL;
     const char *ca_file = NULL;
     const char *ca_dir = NULL;
+    const char *client_cert = NULL;
+    const char *client_key = NULL;
+    bool client_cert_input = false;
+    bool client_key_input = false;
     uint16_t mfl_value = 0;
     uint8_t insecure = 0;
     int reconnect = 0;
@@ -238,17 +251,24 @@ int main(int argc, char *const *argv)
     int echo_input = 0;
     int use_corked_io = 0;
     int use_tls13 = 0;
+    uint8_t non_blocking = 0;
+    int keyshares_count = 0;
+    char keyshares[S2N_ECC_EVP_SUPPORTED_CURVES_COUNT][S2N_MAX_ECC_CURVE_NAME_LENGTH];
+    char *input = NULL;
+    char *token = NULL;
 
     static struct option long_options[] = {
         {"alpn", required_argument, 0, 'a'},
         {"ciphers", required_argument, 0, 'c'},
-        {"echo", required_argument, 0, 'e'},
+        {"echo", no_argument, 0, 'e'},
         {"help", no_argument, 0, 'h'},
         {"name", required_argument, 0, 'n'},
         {"status", no_argument, 0, 's'},
         {"mfl", required_argument, 0, 'm'},
         {"ca-file", required_argument, 0, 'f'},
         {"ca-dir", required_argument, 0, 'd'},
+        {"cert", required_argument, 0, 'l'},
+        {"key", required_argument, 0, 'k'},
         {"insecure", no_argument, 0, 'i'},
         {"reconnect", no_argument, 0, 'r'},
         {"no-session-ticket", no_argument, 0, 'T'},
@@ -256,11 +276,13 @@ int main(int argc, char *const *argv)
         {"timeout", required_argument, 0, 't'},
         {"corked-io", no_argument, 0, 'C'},
         {"tls13", no_argument, 0, '3'},
+        {"keyshares", required_argument, 0, 'K'},
+        {"non-blocking", no_argument, 0, 'B'},
     };
 
     while (1) {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "a:c:ehn:sf:d:D:t:irTC", long_options, &option_index);
+        int c = getopt_long(argc, argv, "a:c:ehn:sf:d:l:k:D:t:irTCK:", long_options, &option_index);
         if (c == -1) {
             break;
         }
@@ -280,6 +302,17 @@ int main(int argc, char *const *argv)
         case 'h':
             usage();
             break;
+        case 'K':
+            input = optarg;
+            token = strtok(input, ":");
+            while( token != NULL ) {
+                strcpy(keyshares[keyshares_count], token);
+                if (++keyshares_count == S2N_ECC_EVP_SUPPORTED_CURVES_COUNT) {
+                    break;
+                }
+                token = strtok(NULL, ":");
+            }
+            break;
         case 'n':
             server_name = optarg;
             break;
@@ -294,6 +327,14 @@ int main(int argc, char *const *argv)
             break;
         case 'd':
             ca_dir = optarg;
+            break;
+        case 'l':
+            client_cert = load_file_to_cstring(optarg);
+            client_cert_input = true;
+            break;
+        case 'k':
+            client_key = load_file_to_cstring(optarg);
+            client_key_input = true;
             break;
         case 'i':
             insecure = 1;
@@ -316,6 +357,9 @@ int main(int argc, char *const *argv)
             break;
         case '3':
             use_tls13 = 1;
+            break;
+        case 'B':
+            non_blocking = 1;
             break;
         case '?':
         default:
@@ -351,6 +395,10 @@ int main(int argc, char *const *argv)
         exit(1);
     }
 
+    if (use_tls13) {
+        GUARD_EXIT(s2n_enable_tls13(), "Error enabling TLS1.3");
+    }
+
     GUARD_EXIT(s2n_init(), "Error running s2n_init()");
 
     if ((r = getaddrinfo(host, port, &hints, &ai_list)) != 0) {
@@ -380,8 +428,26 @@ int main(int argc, char *const *argv)
             exit(1);
         }
 
+        if (non_blocking) {
+            int flags = fcntl(sockfd, F_GETFL, 0);
+            if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                fprintf(stderr, "fcntl error: %s\n", strerror(errno));
+                exit(1);
+            }
+        }
+
         struct s2n_config *config = s2n_config_new();
         setup_s2n_config(config, cipher_prefs, type, &unsafe_verify_data, host, alpn_protocols, mfl_value);
+
+        if (client_cert_input != client_key_input) {
+            print_s2n_error("Client cert/key pair must be given.");
+        }
+
+        if (client_cert_input) {
+            struct s2n_cert_chain_and_key *chain_and_key = s2n_cert_chain_and_key_new();
+            GUARD_EXIT(s2n_cert_chain_and_key_load_pem(chain_and_key, client_cert, client_key), "Error getting certificate/key");
+            GUARD_EXIT(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key), "Error setting certificate/key");
+        }
 
         if (ca_file || ca_dir) {
             if (s2n_config_set_verification_ca_location(config, ca_file, ca_dir) < 0) {
@@ -394,10 +460,6 @@ int main(int argc, char *const *argv)
 
         if (session_ticket) {
             GUARD_EXIT(s2n_config_set_session_tickets_onoff(config, 1), "Error enabling session tickets");
-        }
-
-        if (use_tls13 && S2N_IN_TEST) {
-            GUARD_EXIT(s2n_enable_tls13(), "Error enabling TLS1.3");
         }
 
         struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);
@@ -419,14 +481,19 @@ int main(int argc, char *const *argv)
             GUARD_EXIT(s2n_connection_use_corked_io(conn), "Error setting corked io");
         }
 
+        for (size_t i = 0; i < keyshares_count; i++) {
+            if (keyshares[i]) {
+                GUARD_EXIT(s2n_connection_set_keyshare_by_name_for_testing(conn, keyshares[i]), "Error setting keyshares to generate");
+            }
+        }
+
         /* Update session state in connection if exists */
         if (session_state_length > 0) {
             GUARD_EXIT(s2n_connection_set_session(conn, session_state, session_state_length), "Error setting session state in connection");
         }
 
         /* See echo.c */
-        if (negotiate(conn) != 0)
-        {
+        if (negotiate(conn, sockfd) != 0) {
             /* Error is printed in negotiate */
             S2N_ERROR_PRESERVE_ERRNO();
         }
@@ -453,6 +520,8 @@ int main(int argc, char *const *argv)
         }
 
         if (echo_input == 1) {
+            fflush(stdout);
+            fflush(stderr);
             echo(conn, sockfd);
         }
 

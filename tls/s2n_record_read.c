@@ -93,16 +93,33 @@ int s2n_record_header_parse(
     return 0;
 }
 
+/* In TLS 1.3, handle CCS message as unprotected records all the time.
+ * https://tools.ietf.org/html/rfc8446#section-5
+ *
+ * In TLS 1.2 and TLS 1.3 Alert messages are plaintext or encrypted
+ * depending on the context of the connection. If we receive an encrypted
+ * alert, the record type is TLS_APPLICATION_DATA at this point. It will
+ * be decrypted and processed in s2n_handshake_io. We may receive a
+ * plaintext alert if we hit an error before the handshake completed
+ * (like a certificate failed to validate).
+ * https://tools.ietf.org/html/rfc8446#section-6
+ *
+ * This function is specific to TLS 1.3 to avoid changing the behavior
+ * of existing interpretation of TLS 1.2 alerts. */
+static bool s2n_is_tls13_plaintext_content(struct s2n_connection *conn, uint8_t content_type)
+{
+    return conn->actual_protocol_version == S2N_TLS13 && (content_type == TLS_ALERT || content_type == TLS_CHANGE_CIPHER_SPEC);
+}
+
 int s2n_record_parse(struct s2n_connection *conn)
 {
     uint8_t content_type;
     uint16_t encrypted_length;
     GUARD(s2n_record_header_parse(conn, &content_type, &encrypted_length));
 
-    /* In TLS 1.3, handle CCS message as unprotected records */
     struct s2n_crypto_parameters *current_client_crypto = conn->client;
     struct s2n_crypto_parameters *current_server_crypto = conn->server;
-    if (conn->actual_protocol_version == S2N_TLS13 && content_type == TLS_CHANGE_CIPHER_SPEC) {
+    if (s2n_is_tls13_plaintext_content(conn, content_type)) {
         conn->client = &conn->initial;
         conn->server = &conn->initial;
     }
@@ -121,7 +138,7 @@ int s2n_record_parse(struct s2n_connection *conn)
         session_key = &conn->server->server_key;
     }
 
-    if (conn->actual_protocol_version == S2N_TLS13 && content_type == TLS_CHANGE_CIPHER_SPEC) {
+    if (s2n_is_tls13_plaintext_content(conn, content_type)) {
         conn->client = current_client_crypto;
         conn->server = current_server_crypto;
     }
@@ -147,19 +164,39 @@ int s2n_record_parse(struct s2n_connection *conn)
     return 0;
 }
 
-int s2n_parse_record_type(struct s2n_stuffer *stuffer, uint8_t * record_type) 
+int s2n_tls13_parse_record_type(struct s2n_stuffer *stuffer, uint8_t *record_type)
 {
-    GUARD(s2n_stuffer_skip_read(stuffer, s2n_stuffer_data_available(stuffer) - 1));
+    uint32_t bytes_left = s2n_stuffer_data_available(stuffer);
 
-    /* set the true record type */
-    GUARD(s2n_stuffer_read_uint8(stuffer, record_type));
+    /* From rfc8446 Section 5.4
+     * The presence of padding does not change the overall record size
+     * limitations: the full encoded TLSInnerPlaintext MUST NOT exceed 2^14
+     * + 1 octets
+     */
+    S2N_ERROR_IF(bytes_left > S2N_MAXIMUM_INNER_PLAINTEXT_LENGTH, S2N_ERR_MAX_INNER_PLAINTEXT_SIZE);
 
-    /* wipe this last byte so the rest handshake works like < TLS 1.3 */
-    GUARD(s2n_stuffer_wipe_n(stuffer, 1));
+    /* set cursor to the end of the stuffer */
+    GUARD(s2n_stuffer_skip_read(stuffer, bytes_left));
 
-    /* set the read cursor at where it should be */
+    /* Record type should have values greater than zero.
+     * If zero, treat as padding, keep reading and wiping from the back
+     * until a non-zero value is found
+     */
+    *record_type = 0;
+    while (*record_type == 0) {
+        /* back the cursor by one to read off the last byte */
+        GUARD(s2n_stuffer_rewind_read(stuffer, 1));
+
+        /* set the record type */
+        GUARD(s2n_stuffer_read_uint8(stuffer, record_type));
+
+        /* wipe the last byte at the end of the stuffer */
+        GUARD(s2n_stuffer_wipe_n(stuffer, 1));
+    }
+
+    /* only the original plaintext should remain */
+    /* now reset the read cursor at where it should be */
     GUARD(s2n_stuffer_reread(stuffer));
 
     return 0;
 }
-

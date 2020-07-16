@@ -18,18 +18,18 @@
 
 #include "crypto/s2n_certificate.h"
 #include "crypto/s2n_dhe.h"
-#include "crypto/s2n_rsa.h"
 #include "crypto/s2n_rsa_pss.h"
 #include "stuffer/s2n_stuffer.h"
 #include "tls/s2n_connection.h"
 #include "tls/s2n_config.h"
 #include "utils/s2n_random.h"
 
-
 int s2n_flip_random_bit(struct s2n_blob *blob) {
     /* Flip a random bit in the blob */
-    int64_t byte_flip_pos = s2n_public_random(blob->size);
-    int64_t bit_flip_pos =  s2n_public_random(8);
+    uint64_t byte_flip_pos;
+    GUARD_AS_POSIX(s2n_public_random(blob->size, &byte_flip_pos));
+    uint64_t bit_flip_pos;
+    GUARD_AS_POSIX(s2n_public_random(8, &bit_flip_pos));
 
     uint8_t mask = 0x01 << (uint8_t)bit_flip_pos;
     blob->data[byte_flip_pos] ^= mask;
@@ -41,7 +41,15 @@ int main(int argc, char **argv)
 {
     BEGIN_TEST();
 
-#if RSA_PSS_SUPPORTED
+    /* Don't use RSA-PSS certs if unsupported */
+#if !RSA_PSS_CERTS_SUPPORTED
+    EXPECT_FALSE(s2n_is_rsa_pss_certs_supported());
+    END_TEST();
+#endif
+    EXPECT_TRUE(s2n_is_rsa_pss_certs_supported());
+
+    /* Check that s2n_is_rsa_pss_certs_supported() is a superset of s2n_is_rsa_pss_signing_supported() */
+    EXPECT_TRUE(s2n_is_rsa_pss_signing_supported());
 
     /* Positive Test: Ensure we can sign and verify a randomly generated signature.
      * Pseudocode: assert(SUCCESS == verify(Key1_public, message, sign(Key1_private, message)))
@@ -78,6 +86,10 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_pkey_free(&public_key));
         free(cert_chain_pem);
         free(private_key_pem);
+
+        /* Verify repeated key frees.
+         * (Later calls should be a no-op) */
+        EXPECT_SUCCESS(s2n_pkey_free(&public_key));
     }
 
     /* Negative Test: Loading mismatching RSA PSS Public/Private Keys will fail.
@@ -140,13 +152,13 @@ int main(int argc, char **argv)
 
         struct s2n_pkey *private_key = chain_and_key->private_key;
         {
-            EXPECT_NOT_NULL(public_key.key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(public_key.pkey);
             EXPECT_NOT_NULL(private_key);
-            EXPECT_NOT_NULL(private_key->key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(private_key->pkey);
 
             /* Generate a random blob to sign and verify */
             s2n_stack_blob(random_msg, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE);
-            EXPECT_SUCCESS(s2n_get_private_random_data(&random_msg));
+            EXPECT_OK(s2n_get_private_random_data(&random_msg));
 
             /* Sign/Verify API's only accept Hashes, so hash our Random Data */
             DEFER_CLEANUP(struct s2n_hash_state sign_hash = {0}, s2n_hash_free);
@@ -161,11 +173,11 @@ int main(int argc, char **argv)
 
             /* Sign and Verify the Hash of the Random Blob */
             s2n_stack_blob(signature_data, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE);
-            EXPECT_SUCCESS(s2n_rsa_pss_sign(private_key, &sign_hash, &signature_data));
+            EXPECT_SUCCESS(s2n_pkey_sign(private_key, S2N_SIGNATURE_RSA_PSS_PSS, &sign_hash, &signature_data));
 
             /* Flip a random bit in the signature */
             EXPECT_SUCCESS(s2n_flip_random_bit(&signature_data));
-            EXPECT_FAILURE(s2n_rsa_pss_verify(&public_key, &verify_hash, &signature_data));
+            EXPECT_FAILURE(s2n_pkey_verify(&public_key, S2N_SIGNATURE_RSA_PSS_PSS, &verify_hash, &signature_data));
         }
 
         /* Release Resources */
@@ -224,17 +236,17 @@ int main(int argc, char **argv)
         struct s2n_pkey *root_private_key = root_chain_and_key->private_key;
         struct s2n_pkey *leaf_private_key = leaf_chain_and_key->private_key;
         {
-            EXPECT_NOT_NULL(root_public_key.key.rsa_pss_key.pkey);
-            EXPECT_NOT_NULL(leaf_public_key.key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(root_public_key.pkey);
+            EXPECT_NOT_NULL(leaf_public_key.pkey);
 
             EXPECT_NOT_NULL(root_private_key);
-            EXPECT_NOT_NULL(root_private_key->key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(root_private_key->pkey);
             EXPECT_NOT_NULL(leaf_private_key);
-            EXPECT_NOT_NULL(leaf_private_key->key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(leaf_private_key->pkey);
 
             /* Generate a random blob to sign and verify */
             s2n_stack_blob(random_msg, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE);
-            EXPECT_SUCCESS(s2n_get_private_random_data(&random_msg));
+            EXPECT_OK(s2n_get_private_random_data(&random_msg));
 
             /* Sign/Verify API's only accept Hashes, so hash our Random Data */
             DEFER_CLEANUP(struct s2n_hash_state sign_hash = {0}, s2n_hash_free);
@@ -251,8 +263,8 @@ int main(int argc, char **argv)
             s2n_stack_blob(signature_data, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE);
 
             /* Sign with Root's Key, but verify with Leaf's Key. This should fail. */
-            EXPECT_SUCCESS(s2n_rsa_pss_sign(root_private_key, &sign_hash, &signature_data));
-            EXPECT_FAILURE(s2n_rsa_pss_verify(&leaf_public_key, &verify_hash, &signature_data));
+            EXPECT_SUCCESS(s2n_pkey_sign(root_private_key, S2N_SIGNATURE_RSA_PSS_PSS, &sign_hash, &signature_data));
+            EXPECT_FAILURE(s2n_pkey_verify(&leaf_public_key, S2N_SIGNATURE_RSA_PSS_PSS, &verify_hash, &signature_data));
         }
 
         /* Release Resources */
@@ -297,13 +309,13 @@ int main(int argc, char **argv)
 
         struct s2n_pkey *private_key = chain_and_key->private_key;
         {
-            EXPECT_NOT_NULL(public_key.key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(public_key.pkey);
             EXPECT_NOT_NULL(private_key);
-            EXPECT_NOT_NULL(private_key->key.rsa_pss_key.pkey);
+            EXPECT_NOT_NULL(private_key->pkey);
 
             /* Generate a random blob to sign and verify */
             s2n_stack_blob(random_msg, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE, RSA_PSS_SIGN_VERIFY_RANDOM_BLOB_SIZE);
-            EXPECT_SUCCESS(s2n_get_private_random_data(&random_msg));
+            EXPECT_OK(s2n_get_private_random_data(&random_msg));
 
             /* Sign/Verify API's only accept Hashes, so hash our Random Data */
             DEFER_CLEANUP(struct s2n_hash_state sign_hash = {0}, s2n_hash_free);
@@ -321,8 +333,8 @@ int main(int argc, char **argv)
 
             /* Sign and Verify the Hash of the Random Blob */
             s2n_stack_blob(signature_data, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE, RSA_PSS_SIGN_VERIFY_SIGNATURE_SIZE);
-            EXPECT_SUCCESS(s2n_rsa_pss_sign(private_key, &sign_hash, &signature_data));
-            EXPECT_FAILURE(s2n_rsa_pss_verify(&public_key, &verify_hash, &signature_data));
+            EXPECT_SUCCESS(s2n_pkey_sign(private_key, S2N_SIGNATURE_RSA_PSS_PSS, &sign_hash, &signature_data));
+            EXPECT_FAILURE(s2n_pkey_verify(&public_key, S2N_SIGNATURE_RSA_PSS_PSS, &verify_hash, &signature_data));
         }
 
         /* Release Resources */
@@ -332,8 +344,6 @@ int main(int argc, char **argv)
         free(cert_chain_pem);
         free(private_key_pem);
     }
-
-#endif
 
     END_TEST();
 }

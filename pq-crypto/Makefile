@@ -24,14 +24,23 @@ all: $(OBJS)
 	$(MAKE) -C bike_r2
 	$(MAKE) -C sike_r1
 	$(MAKE) -C sike_r2
+	$(MAKE) -C kyber_r2
 
 .PHONY : sike_r1_bc
 sike_r1_bc: $(BCS1)
 	$(MAKE) -C sike_r1 bc
 
+.PHONY : sike_r2_bc
+sike_r2_bc: $(BCS1)
+	$(MAKE) -C sike_r2 bc
+
 .PHONY : bike_r1_bc
 bike_r1_bc: $(BCS1)
 	$(MAKE) -C bike_r1 bc
+
+.PHONY : bike_r2_bc
+bike_r2_bc: $(BCS1)
+	$(MAKE) -C bike_r2 bc
 
 .PHONY : run-gcov
 run-gcov: gcov
@@ -45,9 +54,10 @@ run-lcov: lcov
 
 .PHONY : clean
 clean: decruft
-	${MAKE} -C bike_r1 decruft
+	$(MAKE) -C bike_r1 decruft
 	$(MAKE) -C bike_r2 decruft
-	${MAKE} -C sike_r1 decruft
-	${MAKE} -C sike_r2 decruft
+	$(MAKE) -C sike_r1 decruft
+	$(MAKE) -C sike_r2 decruft
+	$(MAKE) -C kyber_r2 decruft
 
 include ../s2n.mk

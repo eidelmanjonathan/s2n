@@ -14,6 +14,12 @@
 #
 
 import collections
+from enum import Enum
+
+class OCSP(Enum):
+    ENABLED = 1
+    DISABLED = 2
+    MALFORMED = 3
 
 S2N_SSLv3 = 30
 S2N_TLS10 = 31
@@ -96,9 +102,10 @@ OPENSSL_1_0_2_TEST_CIPHERS = list(filter(lambda x: "CHACHA20" not in x.openssl_n
 # Test ciphers to use when s2n is built with Openssl 1.0.2 libcrypto that is linked with a FIPS module.
 OPENSSL_1_0_2_FIPS_TEST_CIPHERS = list(filter(lambda x: x.openssl_fips_compatible == True, ALL_TEST_CIPHERS))
 
-# Test ciphers to use when s2n is built with LibreSSL libcrypto. s2n does not implement the
-# ChaCha20-Poly1305 cipher offered by LibreSSL.
+# Test ciphers to use when s2n is built with LibreSSL or BoringSSL libcrypto. s2n does not implement the
+# ChaCha20-Poly1305 cipher offered by these libcryptos.
 LIBRESSL_TEST_CIPHERS = list(filter(lambda x: "CHACHA20" not in x.openssl_name, ALL_TEST_CIPHERS))
+BORINGSSL_TEST_CIPHERS = list(filter(lambda x: "CHACHA20" not in x.openssl_name, ALL_TEST_CIPHERS))
 
 # Dictionary to look up ciphers to use by libcrypto s2n is built with.
 # Libcrypto string will be an argument to test scripts.
@@ -107,7 +114,18 @@ S2N_LIBCRYPTO_TO_TEST_CIPHERS = {
     "openssl-1.0.2"         : OPENSSL_1_0_2_TEST_CIPHERS,
     "openssl-1.0.2-fips"    : OPENSSL_1_0_2_FIPS_TEST_CIPHERS,
     "libressl"              : LIBRESSL_TEST_CIPHERS,
+    "boringssl"             : BORINGSSL_TEST_CIPHERS,
 }
+
+S2N_LIBCRYPTO_TO_OCSP = {
+    "openssl-1.1.1"         : [OCSP.ENABLED, OCSP.DISABLED, OCSP.MALFORMED],
+    "openssl-1.0.2"         : [OCSP.ENABLED, OCSP.DISABLED, OCSP.MALFORMED],
+    "openssl-1.0.2-fips"    : [OCSP.ENABLED, OCSP.DISABLED, OCSP.MALFORMED],
+    "libressl"              : [OCSP.ENABLED, OCSP.DISABLED, OCSP.MALFORMED],
+    "boringssl"             : [OCSP.DISABLED],
+}
+
+S2N_LIBCRYPTO_CHOICES = ['openssl-1.0.2', 'openssl-1.0.2-fips', 'openssl-1.1.1', 'libressl', 'boringssl']
 
 S2N_PROTO_VERS_TO_STR = {
     S2N_SSLv3 : "SSLv3",
@@ -128,11 +146,11 @@ S2N_PROTO_VERS_TO_GNUTLS = {
 
 TEST_CERT_DIRECTORY="../pems/"
 
-TEST_RSA_CERT=TEST_CERT_DIRECTORY + "rsa_2048_sha256_wildcard_cert.pem"
-TEST_RSA_KEY=TEST_CERT_DIRECTORY + "rsa_2048_sha256_wildcard_key.pem"
+TEST_RSA_CERT = TEST_CERT_DIRECTORY + "rsa_2048_sha256_wildcard_cert.pem"
+TEST_RSA_KEY  = TEST_CERT_DIRECTORY + "rsa_2048_sha256_wildcard_key.pem"
 
-TEST_ECDSA_CERT=TEST_CERT_DIRECTORY + "ecdsa_p384_pkcs1_cert.pem"
-TEST_ECDSA_KEY=TEST_CERT_DIRECTORY + "ecdsa_p384_pkcs1_key.pem"
+TEST_ECDSA_CERT = TEST_CERT_DIRECTORY + "ecdsa_p384_pkcs1_cert.pem"
+TEST_ECDSA_KEY  = TEST_CERT_DIRECTORY + "ecdsa_p384_pkcs1_key.pem"
 
 TEST_DH_PARAMS=TEST_CERT_DIRECTORY + "dhparams_2048.pem"
 

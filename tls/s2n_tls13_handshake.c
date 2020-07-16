@@ -14,6 +14,8 @@
  */
 
 #include "tls/s2n_tls13_handshake.h"
+#include "tls/s2n_cipher_suites.h"
+#include "tls/s2n_security_policies.h"
 
 int s2n_tls13_mac_verify(struct s2n_tls13_keys *keys, struct s2n_blob *finished_verify, struct s2n_blob *wire_verify)
 {
@@ -26,7 +28,7 @@ int s2n_tls13_mac_verify(struct s2n_tls13_keys *keys, struct s2n_blob *finished_
 }
 
 /*
- * Initalizes the tls13_keys struct
+ * Initializes the tls13_keys struct
  */
 static int s2n_tls13_keys_init_with_ref(struct s2n_tls13_keys *handshake, s2n_hmac_algorithm alg, uint8_t * extract,  uint8_t * derive)
 {
@@ -51,14 +53,20 @@ int s2n_tls13_keys_from_conn(struct s2n_tls13_keys *keys, struct s2n_connection 
 
 int s2n_tls13_compute_shared_secret(struct s2n_connection *conn, struct s2n_blob *shared_secret)
 {
+    notnull_check(conn);
+
+    const struct s2n_ecc_preferences *ecc_preferences = NULL;
+    GUARD(s2n_connection_get_ecc_preferences(conn, &ecc_preferences));
+    notnull_check(ecc_preferences);
+
     struct s2n_ecc_evp_params *server_key = &conn->secure.server_ecc_evp_params;
     notnull_check(server_key);
-
+    notnull_check(server_key->negotiated_curve);
     /* for now we do this tedious loop to find the matching client key selection.
      * this can be simplified if we get an index or a pointer to a specific key */
     int selection = -1;
-    for (int i = 0; i < s2n_ecc_evp_supported_curves_list_len; i++) {
-        if (server_key->negotiated_curve->iana_id == s2n_ecc_evp_supported_curves_list[i]->iana_id) {
+    for (int i = 0; i < ecc_preferences->count; i++) {
+        if (server_key->negotiated_curve->iana_id == ecc_preferences->ecc_curves[i]->iana_id) {
             selection = i;
             break;
         }
@@ -85,6 +93,11 @@ int s2n_tls13_compute_shared_secret(struct s2n_connection *conn, struct s2n_blob
  */
 int s2n_tls13_handle_handshake_secrets(struct s2n_connection *conn)
 {
+    notnull_check(conn);
+    const struct s2n_ecc_preferences *ecc_preferences = NULL;
+    GUARD(s2n_connection_get_ecc_preferences(conn, &ecc_preferences));
+    notnull_check(ecc_preferences);
+    
     /* get tls13 key context */
     s2n_tls13_connection_keys(secrets, conn);
 
@@ -126,7 +139,7 @@ int s2n_tls13_handle_handshake_secrets(struct s2n_connection *conn)
 
     /* since shared secret has been computed, clean up keys */
     GUARD(s2n_ecc_evp_params_free(&conn->secure.server_ecc_evp_params));
-    for (int i = 0; i< s2n_ecc_evp_supported_curves_list_len; i++) {
+    for (int i = 0; i < ecc_preferences->count; i++) {
         GUARD(s2n_ecc_evp_params_free(&conn->secure.client_ecc_evp_params[i]));
     }
 
@@ -142,12 +155,13 @@ int s2n_tls13_handle_application_secrets(struct s2n_connection *conn)
     s2n_tls13_connection_keys(keys, conn);
 
     /* produce application secrets */
-    s2n_stack_blob(client_app_secret, keys.size, S2N_TLS13_SECRET_MAX_LEN);
-    s2n_stack_blob(server_app_secret, keys.size, S2N_TLS13_SECRET_MAX_LEN);
+    struct s2n_blob client_app_secret = { .data = conn->secure.client_app_secret, .size = keys.size };
+    struct s2n_blob server_app_secret = { .data = conn->secure.server_app_secret, .size = keys.size };
 
-    struct s2n_hash_state hash_state = {0};
-    GUARD(s2n_handshake_get_hash_state(conn, keys.hash_algorithm, &hash_state));
-    GUARD(s2n_tls13_derive_application_secrets(&keys, &hash_state, &client_app_secret, &server_app_secret));
+    /* use frozen hashes during the server finished state */
+    struct s2n_hash_state *hash_state;
+    GUARD_NONNULL(hash_state = &conn->handshake.server_finished_copy);
+    GUARD(s2n_tls13_derive_application_secrets(&keys, hash_state, &client_app_secret, &server_app_secret));
 
     s2n_tls13_key_blob(s_app_key, conn->secure.cipher_suite->record_alg->cipher->key_material_size);
     struct s2n_blob s_app_iv = { .data = conn->secure.server_implicit_iv, .size = S2N_TLS13_FIXED_IV_LEN };
@@ -162,4 +176,59 @@ int s2n_tls13_handle_application_secrets(struct s2n_connection *conn)
     GUARD(conn->secure.cipher_suite->record_alg->cipher->set_encryption_key(&conn->secure.client_key, &c_app_key));
 
     return 0;
+}
+
+int s2n_update_application_traffic_keys(struct s2n_connection *conn, s2n_mode mode, keyupdate_status status)
+{
+    notnull_check(conn);
+    
+    /* get tls13 key context */
+    s2n_tls13_connection_keys(keys, conn);
+
+    struct s2n_session_key *old_key;
+    struct s2n_blob old_app_secret;
+    struct s2n_blob sequence_number;
+    struct s2n_blob app_iv;
+
+    if (mode == S2N_CLIENT) {
+        old_key = &conn->secure.client_key;
+        GUARD(s2n_blob_init(&old_app_secret, conn->secure.client_app_secret, keys.size));
+        GUARD(s2n_blob_init(&sequence_number, conn->secure.client_sequence_number, sizeof(conn->secure.client_sequence_number)));
+        GUARD(s2n_blob_init(&app_iv, conn->secure.client_implicit_iv, S2N_TLS13_FIXED_IV_LEN));
+    } else {
+        old_key = &conn->secure.server_key;
+        GUARD(s2n_blob_init(&old_app_secret, conn->secure.server_app_secret, keys.size));
+        GUARD(s2n_blob_init(&sequence_number, conn->secure.server_sequence_number, sizeof(conn->secure.server_sequence_number)));
+        GUARD(s2n_blob_init(&app_iv, conn->secure.server_implicit_iv, S2N_TLS13_FIXED_IV_LEN));  
+    }
+
+    /* Produce new application secret */
+    s2n_stack_blob(app_secret_update, keys.size, S2N_TLS13_SECRET_MAX_LEN);
+
+    /* Derives next generation of traffic secret */
+    GUARD(s2n_tls13_update_application_traffic_secret(&keys, &old_app_secret, &app_secret_update));
+
+    s2n_tls13_key_blob(app_key, conn->secure.cipher_suite->record_alg->cipher->key_material_size);
+
+    /* Derives next generation of traffic key */
+    GUARD(s2n_tls13_derive_traffic_keys(&keys, &app_secret_update, &app_key, &app_iv));
+    if (status == RECEIVING) {
+        GUARD(conn->secure.cipher_suite->record_alg->cipher->set_decryption_key(old_key, &app_key));
+    } else {
+        GUARD(conn->secure.cipher_suite->record_alg->cipher->set_encryption_key(old_key, &app_key));
+    }
+
+    /* According to https://tools.ietf.org/html/rfc8446#section-5.3:
+     * Each sequence number is set to zero at the beginning of a connection and
+     * whenever the key is changed; the first record transmitted under a particular traffic key
+     * MUST use sequence number 0.
+     */
+    GUARD(s2n_blob_zero(&sequence_number));
+    
+    /* Save updated secret */
+    struct s2n_stuffer old_secret_stuffer = {0};
+    GUARD(s2n_stuffer_init(&old_secret_stuffer, &old_app_secret));
+    GUARD(s2n_stuffer_write_bytes(&old_secret_stuffer, app_secret_update.data, keys.size));
+
+    return S2N_SUCCESS;
 }

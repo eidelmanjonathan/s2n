@@ -86,6 +86,11 @@ S2N_BLOB_LABEL(s2n_tls13_label_traffic_secret_iv, "iv")
  */
 S2N_BLOB_LABEL(s2n_tls13_label_finished, "finished")
 
+/*
+ * TLS 1.3 KeyUpdate label
+ */
+S2N_BLOB_LABEL(s2n_tls13_label_application_traffic_secret_update, "traffic upd")
+
 static const struct s2n_blob zero_length_blob = { .data = NULL, .size = 0 };
 
 /* Message transcript hash based on selected HMAC algorithm */
@@ -106,7 +111,7 @@ static int s2n_tls13_transcript_message_hash(struct s2n_tls13_keys *keys, const 
 }
 
 /*
- * Initalizes the tls13_keys struct
+ * Initializes the tls13_keys struct
  */
 int s2n_tls13_keys_init(struct s2n_tls13_keys *keys, s2n_hmac_algorithm alg)
 {
@@ -207,6 +212,9 @@ int s2n_tls13_derive_application_secrets(struct s2n_tls13_keys *keys, struct s2n
     notnull_check(client_secret);
     notnull_check(server_secret);
 
+    /* Sanity check that input hash is of expected type */
+    S2N_ERROR_IF(keys->hash_algorithm != hashes->alg, S2N_ERR_HASH_INVALID_ALGORITHM);
+
     s2n_tls13_key_blob(empty_key, keys->size);
     GUARD(s2n_hkdf_extract(&keys->hmac, keys->hmac_algorithm, &keys->derive_secret, &empty_key, &keys->extract_secret));
 
@@ -267,16 +275,31 @@ int s2n_tls13_derive_finished_key(struct s2n_tls13_keys *keys, struct s2n_blob *
 int s2n_tls13_calculate_finished_mac(struct s2n_tls13_keys *keys, struct s2n_blob *finished_key, struct s2n_hash_state *hash_state, struct s2n_blob *finished_verify)
 {
     /* Set up a blob to contain hash */
-    s2n_tls13_key_blob(transcribe_hash, keys->size);
+    s2n_tls13_key_blob(transcript_hash, keys->size);
 
     /* Make a copy of the hash state */
     struct s2n_hash_state hash_state_copy;
     GUARD(s2n_hash_new(&hash_state_copy));
     GUARD(s2n_hash_copy(&hash_state_copy, hash_state));
-    GUARD(s2n_hash_digest(&hash_state_copy, transcribe_hash.data, transcribe_hash.size));
+    GUARD(s2n_hash_digest(&hash_state_copy, transcript_hash.data, transcript_hash.size));
     GUARD(s2n_hash_free(&hash_state_copy));
 
-    GUARD(s2n_hkdf_extract(&keys->hmac, keys->hmac_algorithm, finished_key, &transcribe_hash, finished_verify));
+    GUARD(s2n_hkdf_extract(&keys->hmac, keys->hmac_algorithm, finished_key, &transcript_hash, finished_verify));
+
+    return 0;
+}
+
+/*
+ * Derives next generation of traffic secret
+ */
+int s2n_tls13_update_application_traffic_secret(struct s2n_tls13_keys *keys, struct s2n_blob *old_secret, struct s2n_blob *new_secret)
+{
+    notnull_check(keys);
+    notnull_check(old_secret);
+    notnull_check(new_secret);
+
+    GUARD(s2n_hkdf_expand_label(&keys->hmac, keys->hmac_algorithm, old_secret,
+                                &s2n_tls13_label_application_traffic_secret_update, &zero_length_blob, new_secret));
 
     return 0;
 }

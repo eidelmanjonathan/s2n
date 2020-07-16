@@ -19,17 +19,6 @@ set -ex
 # Some Test install scripts use curl commands to download files from S3, but those commands don't work when forced to load OpenSSL 1.1.1
 source .travis/s2n_override_paths.sh
 
-if [[ "$BUILD_S2N" == "true" ]]; then
-    .travis/run_cppcheck.sh "$CPPCHECK_INSTALL_DIR";
-    .travis/copyright_mistake_scanner.sh;
-    .travis/grep_simple_mistakes.sh;
-fi
-
-if [[ "$BUILD_S2N" == "true" && "$TRAVIS_OS_NAME" == "linux" ]]; then
-    .travis/run_kwstyle.sh;
-    .travis/cpp_style_comment_linter.sh;
-fi
-
 # Use prlimit to set the memlock limit to unlimited for linux. OSX is unlimited by default
 if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
     PRLIMIT_LOCATION=`which prlimit`
@@ -87,7 +76,10 @@ fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "sawHMACFailure" ]]; then make -C tests/saw failure-tests ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "ctverif" ]]; then .travis/run_ctverif.sh "$CTVERIF_INSTALL_DIR" ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "sawSIKE_r1" ]]; then make -C tests/saw sike_r1 ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "sawSIKE_r2" ]]; then make -C tests/saw sike_r2 ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "sawSIKE_r2_x64" ]]; then make -C tests/saw sike_r2_x64 ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "sawBIKE_r1" ]]; then make -C tests/saw bike_r1 ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "sawBIKE_r2" ]]; then make -C tests/saw bike_r2 ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "sidetrail" ]]; then .travis/run_sidetrail.sh "$SIDETRAIL_INSTALL_DIR" "$PART" ; fi
 
 # Generate *.gcov files that can be picked up by the CodeCov.io Bash helper script. Don't run lcov or genhtml 

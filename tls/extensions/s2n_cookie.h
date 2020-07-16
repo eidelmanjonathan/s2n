@@ -16,20 +16,14 @@
 
 #pragma once
 
+#include "tls/extensions/s2n_extension_type.h"
 #include "tls/s2n_connection.h"
 #include "stuffer/s2n_stuffer.h"
 
-/* Return the length of cookie data in the connection */
-extern int s2n_cookie_len(struct s2n_connection *conn);
+extern const s2n_extension_type s2n_client_cookie_extension;
+extern const s2n_extension_type s2n_server_cookie_extension;
 
-/* Write the connection's cookie data to the output stuffer */
-extern int s2n_cookie_send(struct s2n_connection *conn, struct s2n_stuffer *out);
-
-/* Read cookie data out of the received extension, and save it in the connection */
-extern int s2n_cookie_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-
-/* Functions specific to the server/client side cookie operations */
-extern int s2n_extensions_server_cookie_send(struct s2n_connection *conn, struct s2n_stuffer *out);
-extern int s2n_extensions_server_cookie_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);
-extern int s2n_extensions_client_cookie_send(struct s2n_connection *conn, struct s2n_stuffer *out);
-extern int s2n_extensions_client_cookie_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);
+/* Old-style extension functions -- remove after extensions refactor is complete */
+int s2n_extensions_cookie_size(struct s2n_connection *conn);
+int s2n_extensions_cookie_send(struct s2n_connection *conn, struct s2n_stuffer *out);
+int s2n_extensions_cookie_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);

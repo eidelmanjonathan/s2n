@@ -1,7 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
 # You may not use this file except in compliance with the License.
 # A copy of the License is located at
 #
@@ -26,6 +22,7 @@ endif
 CRYPTO_LIBS = -lcrypto
 
 CC	:= $(CROSS_COMPILE)$(CC)
+CXX	:= $(CROSS_COMPILE)$(CXX)
 AR	= $(CROSS_COMPILE)ar
 RANLIB	= $(CROSS_COMPILE)ranlib
 CLANG    ?= clang-3.9
@@ -35,9 +32,16 @@ SOURCES = $(wildcard *.c *.h)
 CRUFT   = $(wildcard *.c~ *.h~ *.c.BAK *.h.BAK *.o *.a *.so *.dylib *.bc *.gcov *.gcda *.gcno *.info *.profraw *.tmp)
 INDENT  = $(shell (if indent --version 2>&1 | grep GNU > /dev/null; then echo indent ; elif gindent --version 2>&1 | grep GNU > /dev/null; then echo gindent; else echo true ; fi ))
 
-DEFAULT_CFLAGS = -pedantic -Wall -Werror -Wimplicit -Wunused -Wcomment -Wchar-subscripts -Wuninitialized \
-                 -Wshadow -Wcast-qual -Wcast-align -Wwrite-strings -fPIC -Wno-missing-braces\
-                 -std=c99 -D_POSIX_C_SOURCE=200809L -O2 -I$(LIBCRYPTO_ROOT)/include/ \
+# BoringSSL is a C11 library and has less strict compiler flags than s2n. All other libcryptos use the default c99 flags
+ifeq ($(S2N_LIBCRYPTO), boringssl)
+	DEFAULT_CFLAGS = -std=c11
+else
+	DEFAULT_CFLAGS = -std=c99 -Wcast-qual
+endif
+
+DEFAULT_CFLAGS += -pedantic -Wall -Werror -Wimplicit -Wunused -Wcomment -Wchar-subscripts -Wuninitialized \
+                 -Wshadow  -Wcast-align -Wwrite-strings -fPIC -Wno-missing-braces\
+                 -D_POSIX_C_SOURCE=200809L -O2 -I$(LIBCRYPTO_ROOT)/include/ \
                  -I$(S2N_ROOT)/api/ -I$(S2N_ROOT) -Wno-deprecated-declarations -Wno-unknown-pragmas -Wformat-security \
                  -D_FORTIFY_SOURCE=2 -fgnu89-inline 
 
@@ -57,10 +61,18 @@ else
 	endif
 endif
 
+ifdef FUZZ_TIMEOUT_SEC
+	DEFAULT_CFLAGS += -DS2N_FUZZ_TESTING=1
+endif
+
 # Add a flag to disable stack protector for alternative libcs without
 # libssp.
 ifneq ($(NO_STACK_PROTECTOR), 1)
 DEFAULT_CFLAGS += -Wstack-protector -fstack-protector-all
+endif
+
+ifeq ($(NO_INLINE), 1)
+DEFAULT_CFLAGS += -fno-inline
 endif
 
 # Define S2N_TEST_IN_FIPS_MODE - to be used for testing when present.
@@ -68,9 +80,19 @@ ifdef S2N_TEST_IN_FIPS_MODE
     DEFAULT_CFLAGS += -DS2N_TEST_IN_FIPS_MODE
 endif
 
+# Don't compile PQ related source code
+ifdef S2N_NO_PQ
+	DEFAULT_CFLAGS += -DS2N_NO_PQ
+endif
+
 # Force the usage of generic C code for PQ crypto, even if the optimized assembly could be used
 ifdef S2N_NO_PQ_ASM
 	DEFAULT_CFLAGS += -DS2N_NO_PQ_ASM
+endif
+
+# All native platforms have execinfo.h, cross-compile targets often don't (android, ARM/alpine)
+ifndef CROSS_COMPILE
+	DEFAULT_CFLAGS += -DS2N_HAVE_EXECINFO
 endif
 
 CFLAGS += ${DEFAULT_CFLAGS}
@@ -79,21 +101,36 @@ ifdef GCC_VERSION
 	ifneq ("$(GCC_VERSION)","NONE")
 		CC=gcc-$(GCC_VERSION)
 	endif
-# Make doesn't support greater than checks, this uses `test` to compare values, then `echo $$?` to return the value of test's
-# exit code and finally using the built in make `ifeq` to check if it was true and then add the extra flag.
-	ifeq ($(shell test $(GCC_VERSION) -gt 7; echo $$?),0)
+	# Make doesn't support greater than checks, this uses `test` to compare values, then `echo $$?` to return the value of test's
+	# exit code and finally using the built in make `ifeq` to check if it was true and then add the extra flag.
+	ifeq ($(shell test $(GCC_VERSION) -gt 7; echo $$?), 0)
 		CFLAGS += -Wimplicit-fallthrough
+	endif
+
+	ifeq ($(shell test $(GCC_VERSION) -ge 10; echo $$?), 0)
+		CFLAGS += -fanalyzer
 	endif
 endif
 
 DEBUG_CFLAGS = -g3 -ggdb -fno-omit-frame-pointer -fno-optimize-sibling-calls
 
 ifdef S2N_ADDRESS_SANITIZER
-	CFLAGS += -fsanitize=address -fuse-ld=gold ${DEBUG_CFLAGS}
+	CFLAGS += -fsanitize=address -fuse-ld=gold -DS2N_ADDRESS_SANITIZER=1 ${DEBUG_CFLAGS}
 endif
 
 ifdef S2N_DEBUG
 	CFLAGS += ${DEBUG_CFLAGS}
+endif
+
+# Prepare CPPFLAGS by stripping out the unsupported options
+CPPFLAGS = ${CFLAGS}
+CPPFLAGS:=$(filter-out -Wimplicit,${CPPFLAGS})
+CPPFLAGS:=$(filter-out -std=c99,${CPPFLAGS})
+CPPFLAGS:=$(filter-out -fgnu89-inline,${CPPFLAGS})
+
+# Prints more information when running tests
+ifdef S2N_TEST_DEBUG
+	DEFAULT_CFLAGS += -DS2N_TEST_DEBUG
 endif
 
 LLVM_GCOV_MARKER_FILE=${COVERAGE_DIR}/use-llvm-gcov.tmp
@@ -130,7 +167,7 @@ INDENTOPTS = -npro -kr -i4 -ts4 -nut -sob -l180 -ss -ncs -cp1
 .PHONY : indentsource
 indentsource:
 	( for source in ${SOURCES} ; do ${INDENT} ${INDENTOPTS} $$source; done )
-	
+
 .PHONY : gcov
 gcov: 
 	( for source in ${SOURCES} ; do $(COV_TOOL) $$source;  done )

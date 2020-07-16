@@ -18,29 +18,27 @@
 
 set -ex
 
-apt-key list
-sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 6B05F25D762E3157
-apt-key list
-
 sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
 sudo apt-get update -o Acquire::CompressionTypes::Order::=gz
 
-DEPENDENCIES="unzip make indent kwstyle libssl-dev tcpdump valgrind lcov m4 nettle-dev nettle-bin pkg-config gcc g++ zlibc zlib1g-dev python3-pip llvm curl git"
+DEPENDENCIES="unzip make indent kwstyle libssl-dev tcpdump valgrind lcov m4 nettle-dev nettle-bin pkg-config gcc g++ zlibc zlib1g-dev python3-pip python3-testresources llvm curl git tox"
 
-sudo apt-get install -y ${DEPENDENCIES}
 
 if [[ -n "$GCC_VERSION" ]] && [[ "$GCC_VERSION" != "NONE" ]]; then
-    sudo apt-get -y install gcc-$GCC_VERSION g++-$GCC_VERSION;
+    DEPENDENCIES+=" gcc-$GCC_VERSION g++-$GCC_VERSION";
 fi
+
+if [[ "$S2N_LIBCRYPTO" == "boringssl" ]]; then
+    DEPENDENCIES+=" cmake";
+fi
+
+sudo apt-get -y install --no-install-recommends ${DEPENDENCIES}
 
 # If prlimit is not on our current PATH, download and compile prlimit manually. s2n needs prlimit to memlock pages
 if ! type prlimit > /dev/null && [[ ! -d "$PRLIMIT_INSTALL_DIR" ]]; then
     mkdir -p "$PRLIMIT_INSTALL_DIR";
     sudo codebuild/bin/install_prlimit.sh "$(mktemp -d)" "$PRLIMIT_INSTALL_DIR";
 fi
-
-if [[ "$TESTS" == "ctverif" || "$TESTS" == "ALL" ]] ; then
-    codebuild/bin/install_ctverif_dependencies.sh ; fi
 
 if [[ "$TESTS" == "ctverif" || "$TESTS" == "ALL" ]] && [[ ! -d "$CTVERIF_INSTALL_DIR" ]]; then
     mkdir -p "$CTVERIF_INSTALL_DIR" && codebuild/bin/install_ctverif.sh "$CTVERIF_INSTALL_DIR" > /dev/null ; fi

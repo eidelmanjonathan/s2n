@@ -19,13 +19,21 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-
-
 struct s2n_blob {
+    /* The data for the s2n_blob */
     uint8_t *data;
+
+    /* The size of the data */
     uint32_t size;
+
+    /* The amount of memory allocated for this blob (i.e. the amount of memory
+     * which needs to be freed when the blob is cleaned up). If this blob was
+     * created with s2n_blob_init(), this value is 0. If s2n_alloc() was called,
+     * this value will be greater than 0.
+     */
     uint32_t allocated;
-    unsigned mlocked :1;
+
+    /* Can this blob be resized */
     unsigned growable :1;
 };
 
@@ -35,7 +43,8 @@ extern bool s2n_blob_is_valid(const struct s2n_blob* b);
 extern int s2n_blob_init(struct s2n_blob *b, uint8_t * data, uint32_t size);
 extern int s2n_blob_zero(struct s2n_blob *b);
 extern int s2n_blob_char_to_lower(struct s2n_blob *b);
-extern int s2n_hex_string_to_bytes(const char *str, struct s2n_blob *blob);
+extern int s2n_hex_string_to_bytes(const uint8_t *str, struct s2n_blob *blob);
+extern int s2n_blob_slice(const struct s2n_blob *b, struct s2n_blob *slice, uint32_t offset, uint32_t size);
 
 #define s2n_stack_blob(name, requested_size, maximum)			\
     size_t name ## _requested_size = (requested_size);			\
@@ -54,4 +63,4 @@ extern int s2n_hex_string_to_bytes(const char *str, struct s2n_blob *blob);
  * because sizeof needs to refer to the buffer length rather than a pointer size */
 #define S2N_BLOB_FROM_HEX( name, hex ) \
     s2n_stack_blob(name, (sizeof(hex) - 1) / 2, (sizeof(hex) - 1) / 2); \
-    GUARD(s2n_hex_string_to_bytes(hex, &name));
+    GUARD(s2n_hex_string_to_bytes((const uint8_t*)hex, &name));

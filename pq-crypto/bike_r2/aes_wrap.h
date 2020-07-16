@@ -1,17 +1,5 @@
-/*
- * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- * http://aws.amazon.com/apache2.0
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- * The license is detailed in the file LICENSE.md, and applies to this file.
+/* Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0"
  *
  * Written by Nir Drucker, Shay Gueron, and Dusan Kostic,
  * AWS Cryptographic Algorithms Group.
@@ -55,6 +43,7 @@ aes256_key_expansion(OUT aes256_ks_t *ks, IN const aes256_key_t *key)
   if(0 == EVP_EncryptInit_ex(*ks, EVP_aes_256_ecb(), NULL, key->raw, NULL))
   {
     EVP_CIPHER_CTX_free(*ks);
+    *ks = NULL;
     BIKE_ERROR(EXTERNAL_LIB_ERROR_OPENSSL);
   }
 

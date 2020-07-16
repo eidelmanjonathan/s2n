@@ -14,14 +14,16 @@
  */
 
 #include "s2n_test.h"
+#include "testlib/s2n_testlib.h"
+
+#include "tls/extensions/s2n_server_supported_versions.h"
+#include "tls/extensions/s2n_server_key_share.h"
 
 #include "tls/s2n_tls.h"
 #include "tls/s2n_tls13.h"
 #include "tls/s2n_config.h"
 #include "tls/s2n_connection.h"
-#include "tls/s2n_client_extensions.h"
-
-static uint8_t tls13_extensions[] = { TLS_EXTENSION_SUPPORTED_VERSIONS, TLS_EXTENSION_KEY_SHARE };
+#include "tls/s2n_cipher_suites.h"
 
 int main(int argc, char **argv)
 {
@@ -48,35 +50,6 @@ int main(int argc, char **argv)
         EXPECT_NOT_EQUAL(conn->server_protocol_version, S2N_TLS13);
 
         EXPECT_SUCCESS(s2n_connection_free(conn));
-    }
-
-    /* Server does not parse new TLS 1.3 extensions by default */
-    {
-        struct s2n_connection *server_conn;
-        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-
-        struct s2n_stuffer extension_data;
-        EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&extension_data, 0));
-        EXPECT_SUCCESS(s2n_stuffer_write_str(&extension_data, "bad extension"));
-
-        uint8_t original_data_size = s2n_stuffer_data_available(&extension_data);
-
-        struct s2n_array *extensions = s2n_array_new(sizeof(struct s2n_client_hello_parsed_extension*));
-        for (int i=0; i < sizeof(tls13_extensions) / sizeof(uint8_t); i++) {
-            struct s2n_client_hello_parsed_extension *extension;
-            EXPECT_NOT_NULL(extension = s2n_array_pushback(extensions));
-
-            extension->extension = extension_data.blob;
-            extension->extension_type = tls13_extensions[i];
-        }
-
-        EXPECT_SUCCESS(s2n_client_extensions_recv(server_conn, extensions));
-        /* None of the extensions parsed any data */
-        EXPECT_EQUAL(original_data_size, s2n_stuffer_data_available(&extension_data));
-
-        EXPECT_SUCCESS(s2n_connection_free(server_conn));
-        EXPECT_SUCCESS(s2n_stuffer_free(&extension_data));
-        EXPECT_SUCCESS(s2n_array_free(extensions));
     }
 
     EXPECT_SUCCESS(s2n_enable_tls13());
@@ -106,44 +79,6 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_free(conn));
     }
 
-    /* Server does parse new TLS 1.3 extensions if enabled */
-    {
-        uint8_t new_extensions[] = { TLS_EXTENSION_SUPPORTED_VERSIONS, TLS_EXTENSION_KEY_SHARE };
-
-        struct s2n_connection *server_conn;
-        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-
-        struct s2n_stuffer extension_data;
-        EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&extension_data, 0));
-
-        struct s2n_array *extensions = s2n_array_new(sizeof(struct s2n_client_hello_parsed_extension*));
-        struct s2n_client_hello_parsed_extension *extension;
-        EXPECT_NOT_NULL(extension = s2n_array_pushback(extensions));
-
-        for (int i=0; i < sizeof(new_extensions) / sizeof(uint8_t); i++) {
-            EXPECT_SUCCESS(s2n_stuffer_wipe(&extension_data));
-            EXPECT_SUCCESS(s2n_stuffer_write_str(&extension_data, "bad extension"));
-
-            extension->extension_type = new_extensions[i];
-
-            /* We can't just take a stuffer blob as its size is all allocated memory, not all written data,
-             * so do a stuffer read here. */
-            extension->extension.size = s2n_stuffer_data_available(&extension_data);
-            extension->extension.data = s2n_stuffer_raw_read(&extension_data, extension->extension.size);
-            EXPECT_NOT_NULL(extension->extension.data);
-
-            /* We're not passing in well-formed extensions, so if they are parsed then they should fail */
-            EXPECT_FAILURE(s2n_client_extensions_recv(server_conn, extensions));
-
-            /* Zero out the blob to avoid dangling pointer */
-            EXPECT_SUCCESS(s2n_blob_zero(&extension->extension));
-        }
-
-        EXPECT_SUCCESS(s2n_connection_free(server_conn));
-        EXPECT_SUCCESS(s2n_stuffer_free(&extension_data));
-        EXPECT_SUCCESS(s2n_array_free(extensions));
-    }
-
     EXPECT_SUCCESS(s2n_disable_tls13());
     EXPECT_FALSE(s2n_is_tls13_enabled());
 
@@ -151,9 +86,78 @@ int main(int argc, char **argv)
     EXPECT_SUCCESS(s2n_disable_tls13());
     EXPECT_FALSE(s2n_is_tls13_enabled());
 
-    /* TLS 1.3 can't be enabled outside of unit tests */
+    /* TLS 1.3 can be enabled outside of unit tests */
     EXPECT_SUCCESS(s2n_in_unit_test_set(false));
-    EXPECT_FAILURE_WITH_ERRNO(s2n_enable_tls13(), S2N_ERR_NOT_IN_UNIT_TEST);
+    EXPECT_SUCCESS(s2n_enable_tls13());
+    EXPECT_SUCCESS(s2n_disable_tls13());
+
+    /* Test s2n_is_valid_tls13_cipher() */
+    {
+        uint8_t value[2] = { 0x13, 0x01 };
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x02;
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x03;
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x04;
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x05;
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x06;
+        EXPECT_FALSE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x13; value[1] = 0x00;
+        EXPECT_FALSE(s2n_is_valid_tls13_cipher(value));
+        value[0] = 0x12; value[1] = 0x01;
+        EXPECT_FALSE(s2n_is_valid_tls13_cipher(value));
+
+        EXPECT_FALSE(s2n_is_valid_tls13_cipher(s2n_dhe_rsa_with_3des_ede_cbc_sha.iana_value));
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(s2n_tls13_aes_128_gcm_sha256.iana_value));
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(s2n_tls13_aes_256_gcm_sha384.iana_value));
+        EXPECT_TRUE(s2n_is_valid_tls13_cipher(s2n_tls13_chacha20_poly1305_sha256.iana_value));
+    }
+
+    /* Server does not parse new TLS 1.3 extensions unless TLS 1.3 enabled */
+    {
+        const s2n_extension_type *tls13_extensions[] = {
+                &s2n_server_supported_versions_extension,
+                &s2n_server_key_share_extension,
+        };
+
+        struct s2n_connection *server_conn;
+        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
+        EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(server_conn));
+
+        struct s2n_stuffer extension_data;
+        EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&extension_data, 0));
+        EXPECT_SUCCESS(s2n_stuffer_write_str(&extension_data, "bad extension"));
+
+        /* Protocol version is required for key share extension parsing */
+        server_conn->actual_protocol_version = S2N_TLS13;
+
+        s2n_parsed_extensions_list parsed_extension_list = { 0 };
+        for (int i=0; i < s2n_array_len(tls13_extensions); i++) {
+            s2n_extension_type_id extension_id;
+            EXPECT_SUCCESS(s2n_extension_supported_iana_value_to_id(tls13_extensions[i]->iana_value, &extension_id));
+            s2n_parsed_extension *parsed_extension = &parsed_extension_list.parsed_extensions[extension_id];
+
+            /* Create parsed extension */
+            parsed_extension->extension = extension_data.blob;
+            parsed_extension->extension_type = tls13_extensions[i]->iana_value;
+
+            EXPECT_SUCCESS(s2n_disable_tls13());
+            EXPECT_SUCCESS(s2n_extension_process(tls13_extensions[i], server_conn, &parsed_extension_list));
+
+            /* Create parsed extension again, because s2n_extension_process cleared the last one */
+            parsed_extension->extension = extension_data.blob;
+            parsed_extension->extension_type = tls13_extensions[i]->iana_value;
+
+            EXPECT_SUCCESS(s2n_enable_tls13());
+            EXPECT_FAILURE(s2n_extension_process(tls13_extensions[i], server_conn, &parsed_extension_list));
+        }
+
+        EXPECT_SUCCESS(s2n_connection_free(server_conn));
+        EXPECT_SUCCESS(s2n_stuffer_free(&extension_data));
+    }
 
     END_TEST();
     return 0;

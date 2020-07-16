@@ -20,67 +20,56 @@
 #include "s2n_test.h"
 #include "testlib/s2n_testlib.h"
 
+#include "tls/extensions/s2n_extension_list.h"
+#include "tls/s2n_cipher_suites.h"
 #include "tls/s2n_tls.h"
 #include "tls/s2n_tls13.h"
-#include "tls/extensions/s2n_certificate_extensions.h"
 
 #include "error/s2n_errno.h"
 #include "stuffer/s2n_stuffer.h"
 #include "utils/s2n_safety.h"
 
-/* Modified test vectors from https://tools.ietf.org/html/rfc8448#section-3 */
+s2n_cert_public_key public_key;
+s2n_pkey_type actual_cert_pkey_type;
 
-/* with invalid certificate extension (supported version) on the end */
-const char tls13_cert_invalid_ext_hex[] =
-    "000001bb0001b03082" /* without 0b0001b9 header */
-    "01ac30820115a003020102020102300d06092a8648"
-    "86f70d01010b0500300e310c300a06035504031303"
-    "727361301e170d3136303733303031323335395a17"
-    "0d3236303733303031323335395a300e310c300a06"
-    "03550403130372736130819f300d06092a864886f7"
-    "0d010101050003818d0030818902818100b4bb498f"
-    "8279303d980836399b36c6988c0c68de55e1bdb826"
-    "d3901a2461eafd2de49a91d015abbc9a95137ace6c"
-    "1af19eaa6af98c7ced43120998e187a80ee0ccb052"
-    "4b1b018c3e0b63264d449a6d38e22a5fda43084674"
-    "8030530ef0461c8ca9d9efbfae8ea6d1d03e2bd193"
-    "eff0ab9a8002c47428a6d35a8d88d79f7f1e3f0203"
-    "010001a31a301830090603551d1304023000300b06"
-    "03551d0f0404030205a0300d06092a864886f70d01"
-    "010b05000381810085aad2a0e5b9276b908c65f73a"
-    "7267170618a54c5f8a7b337d2df7a594365417f2ea"
-    "e8f8a58c8f8172f9319cf36b7fd6c55b80f21a0301"
-    "5156726096fd335e5e67f2dbf102702e608ccae6be"
-    "c1fc63a42a99be5c3eb7107c3c54e9b9eb2bd5203b"
-    "1c3b84e0a8b2f759409ba3eac9d91d402dcc0cc8f8"
-    "961229ac9187b42b4de10006002b00020103";
+static int s2n_skip_cert_chain_size(struct s2n_stuffer *stuffer)
+{
+    uint32_t cert_chain_size;
+    GUARD(s2n_stuffer_read_uint24(stuffer, &cert_chain_size));
+    eq_check(cert_chain_size, s2n_stuffer_data_available(stuffer));
+    return S2N_SUCCESS;
+}
 
-/* with single extension sent */
-/* server can send empty status request extension from https://tools.ietf.org/html/rfc8446#section-4.4.2.1 */
-const char tls13_cert_single_ext_hex[] =
-    "000001b90001b03082" /* without 0b0001b9 header */
-    "01ac30820115a003020102020102300d06092a8648"
-    "86f70d01010b0500300e310c300a06035504031303"
-    "727361301e170d3136303733303031323335395a17"
-    "0d3236303733303031323335395a300e310c300a06"
-    "03550403130372736130819f300d06092a864886f7"
-    "0d010101050003818d0030818902818100b4bb498f"
-    "8279303d980836399b36c6988c0c68de55e1bdb826"
-    "d3901a2461eafd2de49a91d015abbc9a95137ace6c"
-    "1af19eaa6af98c7ced43120998e187a80ee0ccb052"
-    "4b1b018c3e0b63264d449a6d38e22a5fda43084674"
-    "8030530ef0461c8ca9d9efbfae8ea6d1d03e2bd193"
-    "eff0ab9a8002c47428a6d35a8d88d79f7f1e3f0203"
-    "010001a31a301830090603551d1304023000300b06"
-    "03551d0f0404030205a0300d06092a864886f70d01"
-    "010b05000381810085aad2a0e5b9276b908c65f73a"
-    "7267170618a54c5f8a7b337d2df7a594365417f2ea"
-    "e8f8a58c8f8172f9319cf36b7fd6c55b80f21a0301"
-    "5156726096fd335e5e67f2dbf102702e608ccae6be"
-    "c1fc63a42a99be5c3eb7107c3c54e9b9eb2bd5203b"
-    "1c3b84e0a8b2f759409ba3eac9d91d402dcc0cc8f8"
-    "961229ac9187b42b4de1000400050000";
+static int s2n_skip_cert(struct s2n_stuffer *stuffer)
+{
+    uint32_t cert_size;
+    GUARD(s2n_stuffer_read_uint24(stuffer, &cert_size));
+    GUARD(s2n_stuffer_skip_read(stuffer, cert_size));
+    return S2N_SUCCESS;
+}
 
+static int s2n_x509_validator_validate_cert_chain_test(struct s2n_connection *conn, struct s2n_stuffer *stuffer)
+{
+    GUARD(s2n_skip_cert_chain_size(stuffer));
+    uint32_t cert_chain_size = s2n_stuffer_data_available(stuffer);
+
+    uint8_t *cert_chain_data;
+    notnull_check(cert_chain_data = s2n_stuffer_raw_read(stuffer, cert_chain_size));
+
+    GUARD(s2n_x509_validator_validate_cert_chain(&conn->x509_validator, conn,
+            cert_chain_data, cert_chain_size, &actual_cert_pkey_type, &public_key));
+
+    GUARD(s2n_pkey_free(&public_key));
+    return S2N_SUCCESS;
+}
+
+static int s2n_write_test_cert(struct s2n_stuffer *stuffer, struct s2n_cert_chain_and_key *chain_and_key)
+{
+    struct s2n_blob *cert = &chain_and_key->cert_chain->head->raw;
+    GUARD(s2n_stuffer_write_uint24(stuffer, cert->size));
+    GUARD(s2n_stuffer_write_bytes(stuffer, cert->data, cert->size));
+    return S2N_SUCCESS;
+}
 
 int main(int argc, char **argv)
 {
@@ -91,184 +80,245 @@ int main(int argc, char **argv)
     struct s2n_config *config;
     EXPECT_NOT_NULL(config = s2n_config_new());
 
-    /* Server send/receive certificate with TLS 1.3 and no extensions */
+    EXPECT_SUCCESS(s2n_pkey_zero_init(&public_key));
+
+    /* Initialize cert chain */
+    struct s2n_cert_chain_and_key *chain_and_key;
+    EXPECT_SUCCESS(s2n_test_cert_chain_and_key_new(&chain_and_key,
+            S2N_DEFAULT_TEST_CERT_CHAIN, S2N_DEFAULT_TEST_PRIVATE_KEY));
+    EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key));
+
+    /* Initialize cert extension data */
+    uint8_t data[] = "extension data";
+    EXPECT_SUCCESS(s2n_cert_chain_and_key_set_ocsp_data(chain_and_key, data, s2n_array_len(data)));
+    EXPECT_SUCCESS(s2n_cert_chain_and_key_set_sct_list(chain_and_key, data, s2n_array_len(data)));
+
+    /* Test: s2n_send_cert_chain sends extensions */
     {
-        /* Initialize connections */
-        struct s2n_connection *server_conn;
-        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        server_conn->actual_protocol_version = S2N_TLS13;
+        /* Test: extensions only sent for >= TLS1.3 */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->handshake_params.our_chain_and_key = chain_and_key;
 
-        /* Initialize cert chain */
-        char *cert_chain_pem;
-        char *private_key_pem;
-        struct s2n_cert_chain_and_key *ecdsa_cert;
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->status_type = S2N_STATUS_REQUEST_OCSP;
 
-        EXPECT_NOT_NULL(ecdsa_cert = s2n_cert_chain_and_key_new());
-        EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_CERT_CHAIN, cert_chain_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_KEY, private_key_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_load_pem(ecdsa_cert, cert_chain_pem, private_key_pem));
-        
-        EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_set_config(server_conn, config));
-        server_conn->handshake_params.our_chain_and_key = ecdsa_cert;
+            /* TLS1.2 does NOT send extensions */
+            {
+                DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+                EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
 
-        /* Send empty extensions */
-        EXPECT_SUCCESS(s2n_server_cert_send(server_conn));
-        EXPECT_TRUE(s2n_stuffer_data_available(&server_conn->handshake.io) > 0);
+                conn->actual_protocol_version = S2N_TLS12;
+                EXPECT_SUCCESS(s2n_send_cert_chain(conn, &stuffer, chain_and_key));
 
-        /* Receive empty extensions */
-        EXPECT_SUCCESS(s2n_server_cert_recv(server_conn));
+                s2n_parsed_extensions_list extensions;
+                EXPECT_SUCCESS(s2n_skip_cert_chain_size(&stuffer));
+                EXPECT_SUCCESS(s2n_skip_cert(&stuffer));
 
-        /* Clean up */
-        free(cert_chain_pem);
-        free(private_key_pem);
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_free(ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_free(server_conn));
+                EXPECT_FAILURE_WITH_ERRNO(s2n_extension_list_parse(&stuffer, &extensions),
+                        S2N_ERR_BAD_MESSAGE);
+            }
+
+            /* TLS1.3 DOES send extensions */
+            {
+                DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+                EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
+
+                conn->actual_protocol_version = S2N_TLS13;
+                EXPECT_SUCCESS(s2n_send_cert_chain(conn, &stuffer, chain_and_key));
+
+                s2n_parsed_extensions_list extensions;
+                EXPECT_SUCCESS(s2n_skip_cert_chain_size(&stuffer));
+                EXPECT_SUCCESS(s2n_skip_cert(&stuffer));
+
+                EXPECT_SUCCESS(s2n_extension_list_parse(&stuffer, &extensions));
+                EXPECT_PARSED_EXTENSION_LIST_NOT_EMPTY(extensions);
+            }
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* Test: extensions only sent on first certificate */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->handshake_params.our_chain_and_key = chain_and_key;
+
+            DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
+
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->status_type = S2N_STATUS_REQUEST_OCSP;
+
+            conn->actual_protocol_version = S2N_TLS13;
+            EXPECT_SUCCESS(s2n_send_cert_chain(conn, &stuffer, chain_and_key));
+
+            s2n_parsed_extensions_list extensions;
+            EXPECT_SUCCESS(s2n_skip_cert_chain_size(&stuffer));
+
+            /* First cert includes extensions */
+            EXPECT_SUCCESS(s2n_skip_cert(&stuffer));
+            EXPECT_SUCCESS(s2n_extension_list_parse(&stuffer, &extensions));
+            EXPECT_PARSED_EXTENSION_LIST_NOT_EMPTY(extensions);
+
+            /* Other certs do not include extensions */
+            do {
+                EXPECT_SUCCESS(s2n_skip_cert(&stuffer));
+                EXPECT_SUCCESS(s2n_extension_list_parse(&stuffer, &extensions));
+                EXPECT_PARSED_EXTENSION_LIST_EMPTY(extensions);
+            } while(s2n_stuffer_data_available(&stuffer));
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
     }
 
-    /* Client send/receive certificate with TLS 1.3 and no extensions */
+    /* Test: s2n_x509_validator_validate_cert_chain handles the output of s2n_send_cert_chain */
     {
-        /* Initialize connections */
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        client_conn->actual_protocol_version = S2N_TLS13;
+        /* Test: with no extensions */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->actual_protocol_version = S2N_TLS13;
+            conn->handshake_params.our_chain_and_key = chain_and_key;
 
-        /* Initialize cert chain */
-        char *cert_chain_pem;
-        char *private_key_pem;
-        struct s2n_cert_chain_and_key *ecdsa_cert;
+            DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
 
-        EXPECT_NOT_NULL(ecdsa_cert = s2n_cert_chain_and_key_new());
-        EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_CERT_CHAIN, cert_chain_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_KEY, private_key_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_load_pem(ecdsa_cert, cert_chain_pem, private_key_pem));
-        
-        EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_set_config(client_conn, config));
-        client_conn->handshake_params.our_chain_and_key = ecdsa_cert;
+            EXPECT_SUCCESS(s2n_send_cert_chain(conn, &stuffer, chain_and_key));
+            EXPECT_SUCCESS(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
 
-        /* Send empty extensions */
-        EXPECT_SUCCESS(s2n_client_cert_send(client_conn));
-        EXPECT_TRUE(s2n_stuffer_data_available(&client_conn->handshake.io) > 0);
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
 
-        /* Receive empty extensions */
-        client_conn->x509_validator.skip_cert_validation = 1;
-        EXPECT_SUCCESS(s2n_client_cert_recv(client_conn));
+        /* Test: with extensions */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->actual_protocol_version = S2N_TLS13;
+            conn->handshake_params.our_chain_and_key = chain_and_key;
 
-        /* Clean up */
-        free(cert_chain_pem);
-        free(private_key_pem);
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_free(ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
+            DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
+
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->status_type = S2N_STATUS_REQUEST_OCSP;
+            conn->ct_level_requested = S2N_CT_SUPPORT_REQUEST;
+
+            EXPECT_SUCCESS(s2n_send_cert_chain(conn, &stuffer, chain_and_key));
+            EXPECT_SUCCESS(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
+
+            /* OCSP extension processed */
+            EXPECT_EQUAL(conn->status_response.size, s2n_array_len(data));
+            EXPECT_BYTEARRAY_EQUAL(conn->status_response.data, data, s2n_array_len(data));
+
+            /* SCT extension processed */
+            EXPECT_EQUAL(conn->ct_response.size, s2n_array_len(data));
+            EXPECT_BYTEARRAY_EQUAL(conn->ct_response.data, data, s2n_array_len(data));
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
     }
 
-    /* Test this does not break happy path TLS 1.2 server send/recv */
-    { 
-        struct s2n_connection *server_conn;
-        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        server_conn->actual_protocol_version = S2N_TLS12;
-        server_conn->secure.cipher_suite = &s2n_ecdhe_ecdsa_with_aes_128_gcm_sha256;
-
-        char *cert_chain_pem;
-        char *private_key_pem;
-        struct s2n_cert_chain_and_key *ecdsa_cert;
-
-        EXPECT_NOT_NULL(ecdsa_cert = s2n_cert_chain_and_key_new());
-        EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_CERT_CHAIN, cert_chain_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_KEY, private_key_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_load_pem(ecdsa_cert, cert_chain_pem, private_key_pem));
-        
-        EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_set_config(server_conn, config));
-        server_conn->handshake_params.our_chain_and_key = ecdsa_cert;
-
-        EXPECT_SUCCESS(s2n_server_cert_send(server_conn));
-        EXPECT_TRUE(s2n_stuffer_data_available(&server_conn->handshake.io) > 0);
-
-        server_conn->x509_validator.skip_cert_validation = 1;
-        EXPECT_SUCCESS(s2n_server_cert_recv(server_conn));
-
-        free(cert_chain_pem);
-        free(private_key_pem);
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_free(ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_free(server_conn));
-    }
-
-    /* Test TLS 1.2 client send/recv happy path does not break */
-    { 
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        client_conn->actual_protocol_version = S2N_TLS12;
-
-        char *cert_chain_pem;
-        char *private_key_pem;
-        struct s2n_cert_chain_and_key *ecdsa_cert;
-
-        EXPECT_NOT_NULL(ecdsa_cert = s2n_cert_chain_and_key_new());
-        EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_CERT_CHAIN, cert_chain_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_read_test_pem(S2N_ECDSA_P384_PKCS1_KEY, private_key_pem, S2N_MAX_TEST_PEM_SIZE));
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_load_pem(ecdsa_cert, cert_chain_pem, private_key_pem));
-        
-        EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_set_config(client_conn, config));
-        client_conn->handshake_params.our_chain_and_key = ecdsa_cert;
-
-        EXPECT_SUCCESS(s2n_client_cert_send(client_conn));
-        EXPECT_TRUE(s2n_stuffer_data_available(&client_conn->handshake.io) > 0);
-
-        client_conn->x509_validator.skip_cert_validation = 1;
-        EXPECT_SUCCESS(s2n_client_cert_recv(client_conn));
-
-        free(cert_chain_pem);
-        free(private_key_pem);
-        EXPECT_SUCCESS(s2n_cert_chain_and_key_free(ecdsa_cert));
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
-    }
-
-    /* Test with TLS 1.3 and an extension sent */
+    /* Test: s2n_x509_validator_validate_cert_chain receives extensions */
     {
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        client_conn->actual_protocol_version = S2N_TLS13;
+        /* Test: extensions only processed for >= TLS1.3 */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->actual_protocol_version = S2N_TLS13;
+            conn->handshake_params.our_chain_and_key = chain_and_key;
 
-        S2N_BLOB_FROM_HEX(tls13_cert, tls13_cert_single_ext_hex);
-        EXPECT_SUCCESS(s2n_stuffer_write(&client_conn->handshake.io, &tls13_cert));
-        EXPECT_EQUAL(s2n_stuffer_data_available(&client_conn->handshake.io), 445);
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->status_type = S2N_STATUS_REQUEST_OCSP;
 
-        client_conn->x509_validator.skip_cert_validation = 1;
-        EXPECT_SUCCESS(s2n_server_cert_recv(client_conn));
-        EXPECT_EQUAL(s2n_stuffer_data_available(&client_conn->handshake.io), 0);
+            DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
 
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
+            struct s2n_stuffer_reservation size;
+            EXPECT_SUCCESS(s2n_stuffer_reserve_uint24(&stuffer, &size));
+            EXPECT_SUCCESS(s2n_write_test_cert(&stuffer, chain_and_key));
+            EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_CERTIFICATE, conn, &stuffer));
+            EXPECT_SUCCESS(s2n_stuffer_write_vector_size(size));
+
+            /* TLS1.2 does NOT process extensions */
+            {
+                EXPECT_SUCCESS(s2n_stuffer_reread(&stuffer));
+                conn->actual_protocol_version = S2N_TLS12;
+
+                EXPECT_FAILURE(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
+
+                EXPECT_EQUAL(conn->status_response.size, 0);
+                EXPECT_EQUAL(conn->status_response.data, NULL);
+            }
+
+            /* TLS1.3 DOES process extensions */
+            {
+                EXPECT_SUCCESS(s2n_stuffer_reread(&stuffer));
+                conn->actual_protocol_version = S2N_TLS13;
+
+                EXPECT_SUCCESS(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
+
+                EXPECT_EQUAL(conn->status_response.size, s2n_array_len(data));
+                EXPECT_BYTEARRAY_EQUAL(conn->status_response.data, data, s2n_array_len(data));
+            }
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* Test: extensions only processed on first certificate */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            conn->actual_protocol_version = S2N_TLS13;
+            conn->handshake_params.our_chain_and_key = chain_and_key;
+
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->status_type = S2N_STATUS_REQUEST_OCSP;
+
+            struct s2n_stuffer_reservation size;
+
+            /* Extensions on second cert ignored */
+            {
+                DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+                EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
+
+                EXPECT_SUCCESS(s2n_stuffer_reserve_uint24(&stuffer, &size));
+                EXPECT_SUCCESS(s2n_write_test_cert(&stuffer, chain_and_key));
+                EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_EMPTY, conn, &stuffer));
+                EXPECT_SUCCESS(s2n_write_test_cert(&stuffer, chain_and_key));
+                EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_CERTIFICATE, conn, &stuffer));
+                EXPECT_SUCCESS(s2n_stuffer_write_vector_size(size));
+
+                EXPECT_SUCCESS(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
+
+                EXPECT_EQUAL(conn->status_response.size, 0);
+                EXPECT_EQUAL(conn->status_response.data, NULL);
+            }
+
+            /* Extensions on first cert processed */
+            {
+                DEFER_CLEANUP(struct s2n_stuffer stuffer, s2n_stuffer_free);
+                EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&stuffer, 0));
+
+                EXPECT_SUCCESS(s2n_stuffer_reserve_uint24(&stuffer, &size));
+                EXPECT_SUCCESS(s2n_write_test_cert(&stuffer, chain_and_key));
+                EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_CERTIFICATE, conn, &stuffer));
+                EXPECT_SUCCESS(s2n_write_test_cert(&stuffer, chain_and_key));
+                EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_EMPTY, conn, &stuffer));
+                EXPECT_SUCCESS(s2n_stuffer_write_vector_size(size));
+
+                EXPECT_SUCCESS(s2n_x509_validator_validate_cert_chain_test(conn, &stuffer));
+
+                EXPECT_EQUAL(conn->status_response.size, s2n_array_len(data));
+                EXPECT_BYTEARRAY_EQUAL(conn->status_response.data, data, s2n_array_len(data));
+            }
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
     }
 
-    /* Test with TLS 1.3 and invalid kind of extension sent */
-    {
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        client_conn->actual_protocol_version = S2N_TLS13;
-
-        /* Fill io stuffer with data for incorrect extension */
-        S2N_BLOB_FROM_HEX(tls13_cert, tls13_cert_invalid_ext_hex);
-        EXPECT_SUCCESS(s2n_stuffer_write(&client_conn->handshake.io, &tls13_cert));
-        EXPECT_EQUAL(s2n_stuffer_data_available(&client_conn->handshake.io), 447);
-
-        client_conn->x509_validator.skip_cert_validation = 1;
-        /* Verified it fails inside of extension parsing, but the error is masked by cert_untrusted */
-        EXPECT_FAILURE_WITH_ERRNO(s2n_server_cert_recv(client_conn), S2N_ERR_CERT_UNTRUSTED);
-        EXPECT_EQUAL(s2n_stuffer_data_available(&client_conn->handshake.io), 0);
-
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
-    }
-
+    EXPECT_SUCCESS(s2n_cert_chain_and_key_free(chain_and_key));
     EXPECT_SUCCESS(s2n_config_free(config));
 
     END_TEST();

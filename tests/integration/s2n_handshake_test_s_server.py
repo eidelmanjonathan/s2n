@@ -36,13 +36,6 @@ PROTO_VERS_TO_S_SERVER_ARG = {
 
 use_corked_io=False
 
-
-def get_supported_curves_list_by_version(libcrypto_version):
-    if libcrypto_version == "openssl-1.1.1":
-        return ["P-256", "P-384"]
-    else:
-        return ["P-256", "P-384"]
-
 def cleanup_processes(*processes):
     for p in processes:
         p.kill()
@@ -303,7 +296,7 @@ def elliptic_curve_test(host, port, libcrypto_version):
     Acceptance test for supported elliptic curves. Tests all possible supported curves with unsupported curves mixed in
     for noise.
     """
-    supported_curves = get_supported_curves_list_by_version(libcrypto_version)
+    supported_curves = ["P-256", "P-384"]
     unsupported_curves = ["B-163", "K-409"]
     print("\n\tRunning s2n Client elliptic curve tests:")
     print("\tExpected supported:   " + str(supported_curves))
@@ -331,7 +324,7 @@ def main():
     parser.add_argument('host', help='The host for s2nc to connect to')
     parser.add_argument('port', type=int, help='The port for s_server to bind to')
     parser.add_argument('--use_corked_io', action='store_true', help='Turn corked IO on/off')
-    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=['openssl-1.0.2', 'openssl-1.0.2-fips', 'openssl-1.1.1', 'libressl'],
+    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=S2N_LIBCRYPTO_CHOICES,
             help="""The Libcrypto that s2n was built with. s2n supports different cipher suites depending on
                     libcrypto version. Defaults to openssl-1.1.1.""")
     args = parser.parse_args()

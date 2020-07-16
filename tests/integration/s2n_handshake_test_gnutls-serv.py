@@ -29,14 +29,6 @@ import multiprocessing
 from os import environ
 from multiprocessing.pool import ThreadPool
 from s2n_test_constants import *
-from enum import Enum
-
-
-class OCSP(Enum):
-    ENABLED = 1
-    DISABLED = 2
-    MALFORMED = 3
-
 
 def try_gnutls_handshake(endpoint, port, priority_str, session_tickets, ocsp):
     gnutls_cmd = ["gnutls-serv", "--priority=" + priority_str, "-p " + str(port),
@@ -132,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description='Runs TLS server integration tests against s2nd using gnutls-cli')
     parser.add_argument('host', help='The host for gnutls-serv to bind to')
     parser.add_argument('port', type=int, help='The port for gnutls-serv to bind to')
-    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=['openssl-1.0.2', 'openssl-1.0.2-fips', 'openssl-1.1.1', 'libressl'],
+    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=S2N_LIBCRYPTO_CHOICES,
             help="""The Libcrypto that s2n was built with. s2n supports different cipher suites depending on
                     libcrypto version. Defaults to openssl-1.1.1.""")
     args = parser.parse_args()
@@ -152,7 +144,7 @@ def main():
     results = []
     for cipher in test_ciphers:
         for session_tickets in [True, False]:
-            for ocsp in OCSP:
+            for ocsp in S2N_LIBCRYPTO_TO_OCSP[args.libcrypto]:
                 async_result = threadpool.apply_async(handshake, (host, port + port_offset, cipher, session_tickets, ocsp))
                 port_offset += 1
                 results.append(async_result)

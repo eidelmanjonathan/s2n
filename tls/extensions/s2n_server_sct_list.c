@@ -14,22 +14,54 @@
  */
 
 #include "stuffer/s2n_stuffer.h"
+#include "tls/s2n_connection.h"
+#include "tls/s2n_tls.h"
+#include "tls/extensions/s2n_server_sct_list.h"
 
 #include "utils/s2n_safety.h"
 #include "utils/s2n_blob.h"
 
-#include "tls/s2n_connection.h"
-#include "tls/extensions/s2n_server_sct_list.h"
+static bool s2n_server_sct_list_should_send(struct s2n_connection *conn);
+static int s2n_server_sct_list_send(struct s2n_connection *conn, struct s2n_stuffer *out);
+static int s2n_server_sct_list_recv(struct s2n_connection *conn, struct s2n_stuffer *extension);
 
-int s2n_recv_server_sct_list(struct s2n_connection *conn, struct s2n_stuffer *extension)
+const s2n_extension_type s2n_server_sct_list_extension = {
+    .iana_value = TLS_EXTENSION_SCT_LIST,
+    .is_response = true,
+    .send = s2n_server_sct_list_send,
+    .recv = s2n_server_sct_list_recv,
+    .should_send = s2n_server_sct_list_should_send,
+    .if_missing = s2n_extension_noop_if_missing,
+};
+
+static bool s2n_server_sct_list_should_send(struct s2n_connection *conn)
 {
-    struct s2n_blob sct_list = { .data = NULL, .size = 0 };
+    return s2n_server_can_send_sct_list(conn);
+}
 
-    sct_list.size = s2n_stuffer_data_available(extension);
-    sct_list.data = s2n_stuffer_raw_read(extension, sct_list.size);
+int s2n_server_sct_list_send(struct s2n_connection *conn, struct s2n_stuffer *out)
+{
+    notnull_check(conn);
+    struct s2n_blob *sct_list = &conn->handshake_params.our_chain_and_key->sct_list;
+
+    notnull_check(sct_list);
+    GUARD(s2n_stuffer_write(out, sct_list));
+
+    return S2N_SUCCESS;
+}
+
+int s2n_server_sct_list_recv(struct s2n_connection *conn, struct s2n_stuffer *extension)
+{
+    notnull_check(conn);
+
+    struct s2n_blob sct_list;
+    size_t data_available = s2n_stuffer_data_available(extension);
+    GUARD(s2n_blob_init(&sct_list,
+            s2n_stuffer_raw_read(extension, data_available),
+            data_available));
     notnull_check(sct_list.data);
 
     GUARD(s2n_dup(&sct_list, &conn->ct_response));
 
-    return 0;
+    return S2N_SUCCESS;
 }

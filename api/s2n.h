@@ -92,6 +92,14 @@ extern int s2n_config_set_cache_store_callback(struct s2n_config *config, s2n_ca
 extern int s2n_config_set_cache_retrieve_callback(struct s2n_config *config, s2n_cache_retrieve_callback cache_retrieve_callback, void *data);
 extern int s2n_config_set_cache_delete_callback(struct s2n_config *config, s2n_cache_delete_callback cache_delete_callback, void *data);
 
+typedef int (*s2n_mem_init_callback)(void);
+typedef int (*s2n_mem_cleanup_callback)(void);
+typedef int (*s2n_mem_malloc_callback)(void **ptr, uint32_t requested, uint32_t *allocated);
+typedef int (*s2n_mem_free_callback)(void *ptr, uint32_t size);
+
+extern int s2n_mem_set_callbacks(s2n_mem_init_callback mem_init_callback, s2n_mem_cleanup_callback mem_cleanup_callback,
+                                 s2n_mem_malloc_callback mem_malloc_callback, s2n_mem_free_callback mem_free_callback);
+
 typedef enum {
     S2N_EXTENSION_SERVER_NAME = 0,
     S2N_EXTENSION_MAX_FRAG_LEN = 1,
@@ -112,11 +120,16 @@ typedef enum {
 } s2n_max_frag_len;
 
 struct s2n_cert_chain_and_key;
+struct s2n_pkey;
+typedef struct s2n_pkey s2n_cert_public_key;
+typedef struct s2n_pkey s2n_cert_private_key;
+
 extern struct s2n_cert_chain_and_key *s2n_cert_chain_and_key_new(void);
 extern int s2n_cert_chain_and_key_load_pem(struct s2n_cert_chain_and_key *chain_and_key, const char *chain_pem, const char *private_key_pem);
 extern int s2n_cert_chain_and_key_free(struct s2n_cert_chain_and_key *cert_and_key);
 extern int s2n_cert_chain_and_key_set_ctx(struct s2n_cert_chain_and_key *cert_and_key, void *ctx);
 extern void *s2n_cert_chain_and_key_get_ctx(struct s2n_cert_chain_and_key *cert_and_key);
+extern s2n_cert_private_key *s2n_cert_chain_and_key_get_private_key(struct s2n_cert_chain_and_key *cert_and_key);
 
 typedef struct s2n_cert_chain_and_key* (*s2n_cert_tiebreak_callback) (struct s2n_cert_chain_and_key *cert1, struct s2n_cert_chain_and_key *cert2, uint8_t *name, uint32_t name_len);
 extern int s2n_config_set_cert_tiebreak_callback(struct s2n_config *config, s2n_cert_tiebreak_callback cert_tiebreak_cb);
@@ -140,7 +153,6 @@ extern int s2n_config_set_max_cert_chain_depth(struct s2n_config *config, uint16
 
 extern int s2n_config_add_dhparams(struct s2n_config *config, const char *dhparams_pem);
 extern int s2n_config_set_cipher_preferences(struct s2n_config *config, const char *version);
-extern int s2n_config_set_signature_preferences(struct s2n_config *config, const char *version);
 extern int s2n_config_set_protocol_preferences(struct s2n_config *config, const char * const *protocols, int protocol_count);
 typedef enum { S2N_STATUS_REQUEST_NONE = 0, S2N_STATUS_REQUEST_OCSP = 1 } s2n_status_request_type;
 extern int s2n_config_set_status_request_type(struct s2n_config *config, s2n_status_request_type type);
@@ -248,10 +260,6 @@ extern int s2n_connection_is_ocsp_stapled(struct s2n_connection *conn);
 
 extern struct s2n_cert_chain_and_key *s2n_connection_get_selected_cert(struct s2n_connection *conn);
 
-struct s2n_pkey;
-typedef struct s2n_pkey s2n_cert_public_key;
-typedef struct s2n_pkey s2n_cert_private_key;
-
 extern uint64_t s2n_connection_get_wire_bytes_in(struct s2n_connection *conn);
 extern uint64_t s2n_connection_get_wire_bytes_out(struct s2n_connection *conn);
 extern int s2n_connection_get_client_protocol_version(struct s2n_connection *conn);
@@ -266,6 +274,14 @@ extern const char *s2n_connection_get_kem_name(struct s2n_connection *conn);
 extern int s2n_connection_get_alert(struct s2n_connection *conn);
 extern const char *s2n_connection_get_handshake_type_name(struct s2n_connection *conn);
 extern const char *s2n_connection_get_last_message_name(struct s2n_connection *conn);
+
+struct s2n_async_pkey_op;
+
+typedef int (*s2n_async_pkey_fn)(struct s2n_connection *conn, struct s2n_async_pkey_op *op);
+extern int s2n_config_set_async_pkey_callback(struct s2n_config *config, s2n_async_pkey_fn fn);
+extern int s2n_async_pkey_op_perform(struct s2n_async_pkey_op *op, s2n_cert_private_key *key);
+extern int s2n_async_pkey_op_apply(struct s2n_async_pkey_op *op, struct s2n_connection *conn);
+extern int s2n_async_pkey_op_free(struct s2n_async_pkey_op *op);
 
 #ifdef __cplusplus
 }

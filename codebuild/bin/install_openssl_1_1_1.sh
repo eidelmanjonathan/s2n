@@ -28,11 +28,13 @@ fi
 BUILD_DIR=$1
 INSTALL_DIR=$2
 OS_NAME=$3
+source codebuild/bin/jobs.sh
+RELEASE=1_1_1g
 
 cd "$BUILD_DIR"
-curl --retry 3 -L https://github.com/openssl/openssl/archive/OpenSSL_1_1_1-stable.zip --output OpenSSL_1_1_1-stable.zip
-unzip OpenSSL_1_1_1-stable.zip
-cd openssl-OpenSSL_1_1_1-stable
+curl --retry 3 -L https://github.com/openssl/openssl/archive/OpenSSL_${RELEASE}.zip --output OpenSSL_${RELEASE}.zip
+unzip OpenSSL_${RELEASE}.zip
+cd openssl-OpenSSL_${RELEASE}
 
 if [ "$OS_NAME" == "linux" ]; then
     CONFIGURE="./config -d"
@@ -51,9 +53,9 @@ $CONFIGURE -g3 -fPIC              \
          -DSSL_FORBID_ENULL -DOPENSSL_NO_DTLS1 -DOPENSSL_NO_HEARTBEATS      \
          --prefix="$INSTALL_DIR"
 
-make depend
-make
-make install_sw
+make -j $JOBS depend
+make -j $JOBS
+make -j $JOBS install_sw
 
 popd
 

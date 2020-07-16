@@ -14,9 +14,15 @@
  */
 
 #include "s2n_test.h"
+#include "testlib/s2n_testlib.h"
 
 #include "tls/s2n_tls.h"
 #include "tls/s2n_tls13.h"
+
+#include "tls/extensions/s2n_extension_type.h"
+#include "tls/extensions/s2n_server_alpn.h"
+#include "tls/extensions/s2n_server_max_fragment_length.h"
+#include "tls/extensions/s2n_server_server_name.h"
 #include "tls/extensions/s2n_server_supported_versions.h"
 
 #include "error/s2n_errno.h"
@@ -28,96 +34,143 @@ int main(int argc, char **argv)
     BEGIN_TEST();
 
     EXPECT_SUCCESS(s2n_enable_tls13());
-    uint8_t latest_version = S2N_TLS13;
 
-    struct s2n_config *config;
-    EXPECT_NOT_NULL(config = s2n_config_new());
-
-    /* Server successfully sends empty encrypted extension */
+    /* Test s2n_encrypted_extensions_send */
     {
-        struct s2n_connection *server_conn;
-        EXPECT_NOT_NULL(server_conn = s2n_connection_new(S2N_SERVER));
-        EXPECT_SUCCESS(s2n_connection_set_config(server_conn, config));
+        /* Safety checks */
+        EXPECT_FAILURE(s2n_encrypted_extensions_send(NULL));
 
-        uint8_t encrypted_extensions_expected_size = 2;
-        uint16_t encrypted_extensions_expected_length = 0;
+        /* Should fail for pre-TLS1.3 */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
 
-        EXPECT_SUCCESS(s2n_encrypted_extensions_send(server_conn));
+            /* Fails for TLS1.2 */
+            conn->actual_protocol_version = S2N_TLS12;
+            EXPECT_FAILURE_WITH_ERRNO(s2n_encrypted_extensions_send(conn), S2N_ERR_BAD_MESSAGE);
 
-        /* Check that size and data in server_conn->handshake.io are correct */
-        struct s2n_stuffer *server_out = &server_conn->handshake.io;
-        uint16_t encrypted_extensions_actual_length;
+            /* Succeeds for TLS1.3 */
+            conn->actual_protocol_version = S2N_TLS13;
+            EXPECT_SUCCESS(s2n_encrypted_extensions_send(conn));
 
-        EXPECT_EQUAL(encrypted_extensions_expected_size, s2n_stuffer_data_available(server_out));
-        s2n_stuffer_read_uint16(server_out, &encrypted_extensions_actual_length);
-        EXPECT_EQUAL(encrypted_extensions_expected_length, encrypted_extensions_actual_length);
-        EXPECT_EQUAL(encrypted_extensions_actual_length, s2n_stuffer_data_available(server_out));
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
 
-        /* Clean up */
-        EXPECT_SUCCESS(s2n_stuffer_free(server_out));
-        EXPECT_SUCCESS(s2n_connection_free(server_conn));
+        /* Should send no extensions by default */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer *stuffer = &conn->handshake.io;
+
+            EXPECT_SUCCESS(s2n_encrypted_extensions_send(conn));
+
+            uint16_t extension_list_size;
+            EXPECT_SUCCESS(s2n_stuffer_read_uint16(stuffer, &extension_list_size));
+            EXPECT_EQUAL(extension_list_size, 0);
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), 0);
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* Should send a requested extension */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer *stuffer = &conn->handshake.io;
+
+            conn->server_name_used = 1;
+            EXPECT_SUCCESS(s2n_encrypted_extensions_send(conn));
+
+            uint16_t extension_list_size;
+            EXPECT_SUCCESS(s2n_stuffer_read_uint16(stuffer, &extension_list_size));
+            EXPECT_NOT_EQUAL(extension_list_size, 0);
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), extension_list_size);
+
+            uint16_t extension_type;
+            EXPECT_SUCCESS(s2n_stuffer_read_uint16(stuffer, &extension_type));
+            EXPECT_EQUAL(extension_type, s2n_server_server_name_extension.iana_value);
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
     }
 
-    /* Client successfully receives empty encrypted extension */
+    /* Test s2n_encrypted_extensions_recv */
     {
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        EXPECT_SUCCESS(s2n_connection_set_config(client_conn, config));
+        /* Safety checks */
+        EXPECT_FAILURE(s2n_encrypted_extensions_recv(NULL));
 
-        EXPECT_SUCCESS(s2n_encrypted_extensions_send(client_conn));
-        EXPECT_SUCCESS(s2n_encrypted_extensions_recv(client_conn));
+        /* Should fail for pre-TLS1.3 */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_CLIENT));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
 
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
+            /* Fails for TLS1.2 */
+            conn->actual_protocol_version = S2N_TLS12;
+            EXPECT_FAILURE_WITH_ERRNO(s2n_encrypted_extensions_recv(conn), S2N_ERR_BAD_MESSAGE);
+
+            /* Succeeds for TLS1.3 */
+            conn->actual_protocol_version = S2N_TLS13;
+            EXPECT_SUCCESS(s2n_encrypted_extensions_recv(conn));
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* Should parse an empty list */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_CLIENT));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer *stuffer = &conn->handshake.io;
+
+            /* Parse no data */
+            EXPECT_SUCCESS(s2n_encrypted_extensions_recv(conn));
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), 0);
+
+            /* Parse explicitly empty list */
+            EXPECT_SUCCESS(s2n_extension_list_send(S2N_EXTENSION_LIST_EMPTY, conn, stuffer));
+            EXPECT_SUCCESS(s2n_encrypted_extensions_recv(conn));
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), 0);
+
+            /* Parse empty result of default s2n_encrypted_extensions_send */
+            EXPECT_SUCCESS(s2n_encrypted_extensions_send(conn));
+            EXPECT_SUCCESS(s2n_encrypted_extensions_recv(conn));
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), 0);
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* Should parse a requested extension */
+        {
+            struct s2n_connection *conn;
+            EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
+            EXPECT_SUCCESS(s2n_connection_allow_all_response_extensions(conn));
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer *stuffer = &conn->handshake.io;
+
+            conn->server_name_used = 1;
+            EXPECT_SUCCESS(s2n_encrypted_extensions_send(conn));
+
+            /* Reset server_name_used */
+            conn->server_name_used = 0;
+
+            EXPECT_SUCCESS(s2n_encrypted_extensions_recv(conn));
+            EXPECT_EQUAL(s2n_stuffer_data_available(stuffer), 0);
+            EXPECT_EQUAL(conn->server_name_used, 1);
+
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
     }
-
-    /* Client successefully parses a non-empty encrypted extension */
-    {
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        EXPECT_SUCCESS(s2n_connection_set_config(client_conn, config));
-
-        /* Write length of ALPN extension, then write the extension itself */
-        strcpy(client_conn->application_protocol, "h2");
-        const uint8_t application_protocol_len = strlen(client_conn->application_protocol);
-        uint16_t alpn_extension_length = 7 + application_protocol_len;
-        EXPECT_SUCCESS(s2n_stuffer_write_uint16(&client_conn->handshake.io, alpn_extension_length));
-
-        EXPECT_SUCCESS(s2n_stuffer_write_uint16(&client_conn->handshake.io, TLS_EXTENSION_ALPN));
-        EXPECT_SUCCESS(s2n_stuffer_write_uint16(&client_conn->handshake.io, application_protocol_len + 3));
-        EXPECT_SUCCESS(s2n_stuffer_write_uint16(&client_conn->handshake.io, application_protocol_len + 1));
-        EXPECT_SUCCESS(s2n_stuffer_write_uint8(&client_conn->handshake.io, application_protocol_len));
-        EXPECT_SUCCESS(s2n_stuffer_write_bytes(&client_conn->handshake.io, (uint8_t *) client_conn->application_protocol, application_protocol_len));
-
-        /* Client parses encrypted extensions */
-        strcpy(client_conn->application_protocol, "");
-        EXPECT_SUCCESS(s2n_encrypted_extensions_recv(client_conn));
-        EXPECT_SUCCESS(strcmp(client_conn->application_protocol, "h2"));
-
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
-    }
-
-    /* Client does not parse a non-EE extension */
-    {
-        struct s2n_connection *client_conn;
-        EXPECT_NOT_NULL(client_conn = s2n_connection_new(S2N_CLIENT));
-        EXPECT_SUCCESS(s2n_connection_set_config(client_conn, config));
-        client_conn->server_protocol_version = latest_version;
-
-        /* write length of supported versions extension (6) then write the extension itself */
-        uint16_t supported_versions_extension_length = 6;
-        EXPECT_SUCCESS(s2n_stuffer_write_uint16(&client_conn->handshake.io, supported_versions_extension_length));
-        EXPECT_SUCCESS(s2n_extensions_server_supported_versions_send(client_conn, &client_conn->handshake.io));
-
-        client_conn->server_protocol_version = 0;
-        EXPECT_FAILURE_WITH_ERRNO(s2n_encrypted_extensions_recv(client_conn), S2N_ERR_BAD_MESSAGE);
-
-        EXPECT_EQUAL(client_conn->client_protocol_version, latest_version);
-        EXPECT_NOT_EQUAL(client_conn->server_protocol_version, latest_version);
-
-        EXPECT_SUCCESS(s2n_connection_free(client_conn));
-    }
-
-    EXPECT_SUCCESS(s2n_config_free(config));
 
     END_TEST();
 }

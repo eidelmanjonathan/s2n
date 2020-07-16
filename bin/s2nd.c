@@ -231,55 +231,6 @@ static uint8_t unsafe_verify_host_fn(const char *host_name, size_t host_name_len
     return 1;
 }
 
-extern void print_s2n_error(const char *app_error);
-extern int echo(struct s2n_connection *conn, int sockfd);
-extern int negotiate(struct s2n_connection *conn);
-
-/* Caller is expected to free the memory returned. */
-static char *load_file_to_cstring(const char *path)
-{
-    FILE *pem_file = fopen(path, "rb");
-    if (!pem_file) {
-       fprintf(stderr, "Failed to open file %s: '%s'\n", path, strerror(errno));
-       return NULL;
-    }
-
-    /* Make sure we can fit the pem into the output buffer */
-    if (fseek(pem_file, 0, SEEK_END) < 0) {
-        fprintf(stderr, "Failed calling fseek: '%s'\n", strerror(errno));
-        fclose(pem_file);
-        return NULL;
-    }
-
-    const long int pem_file_size = ftell(pem_file);
-    if (pem_file_size < 0) {
-        fprintf(stderr, "Failed calling ftell: '%s'\n", strerror(errno));
-        fclose(pem_file);
-        return NULL;
-    }
-
-    rewind(pem_file);
-
-    char *pem_out = malloc(pem_file_size + 1);
-    if (pem_out == NULL) {
-        fprintf(stderr, "Failed allocating memory\n");
-        fclose(pem_file);
-        return NULL;
-    }
-
-    if (fread(pem_out, sizeof(char), pem_file_size, pem_file) < pem_file_size) {
-        fprintf(stderr, "Failed reading file: '%s'\n", strerror(errno));
-        free(pem_out);
-        fclose(pem_file);
-        return NULL;
-    }
-
-    pem_out[pem_file_size] = '\0';
-    fclose(pem_file);
-
-    return pem_out;
-}
-
 void usage()
 {
     fprintf(stderr, "usage: s2nd [options] host port\n");
@@ -330,10 +281,14 @@ void usage()
     fprintf(stderr, "    Disable session ticket for resumption.\n");
     fprintf(stderr, "  -C,--corked-io\n");
     fprintf(stderr, "    Turn on corked io\n");
-    if (S2N_IN_TEST) {
-        fprintf(stderr, "  --tls13\n");
-        fprintf(stderr, "    Turn on experimental TLS1.3 support for testing.");
-    }
+    fprintf(stderr, "  --tls13\n");
+    fprintf(stderr, "    Turn on experimental TLS1.3 support.\n");
+    fprintf(stderr, "  --non-blocking\n");
+    fprintf(stderr, "    Set the non-blocking flag on the connection's socket.\n");
+    fprintf(stderr, "  -w --https-server\n");
+    fprintf(stderr, "    Run s2nd in a simple https server mode.\n");
+    fprintf(stderr, "  -b --https-bench <bytes>\n");
+    fprintf(stderr, "    Send number of bytes in https server mode to test throughput.\n");
     fprintf(stderr, "  -h,--help\n");
     fprintf(stderr, "    Display this message and quit.\n");
 
@@ -352,6 +307,9 @@ struct conn_settings {
     unsigned session_cache:1;
     unsigned insecure:1;
     unsigned use_corked_io:1;
+    unsigned https_server:1;
+    uint32_t https_bench;
+    int max_conns;
     const char *ca_dir;
     const char *ca_file;
 };
@@ -396,7 +354,10 @@ int handle_connection(int fd, struct s2n_config *config, struct conn_settings se
         GUARD_RETURN(s2n_connection_use_corked_io(conn), "Error setting corked io");
     }
 
-    negotiate(conn);
+    if (negotiate(conn, fd) != S2N_SUCCESS) {
+        /* Error is printed in negotiate */
+        S2N_ERROR_PRESERVE_ERRNO();
+    }
 
     if (settings.mutual_auth) {
         if (!s2n_connection_client_cert_used(conn)) {
@@ -405,7 +366,9 @@ int handle_connection(int fd, struct s2n_config *config, struct conn_settings se
         }
     }
 
-    if (!settings.only_negotiate) {
+    if (settings.https_server) {
+        https(conn, settings.https_bench);
+    } else if (!settings.only_negotiate) {
         echo(conn, fd);
     }
 
@@ -431,6 +394,7 @@ int main(int argc, char *const *argv)
     const char *ocsp_response_file_path = NULL;
     const char *session_ticket_key_file_path = NULL;
     const char *cipher_prefs = "default";
+    const char *alpn = NULL;
 
     /* The certificates provided by the user. If there are none provided, we will use the hardcoded default cert.
      * The associated private key for each cert will be at the same index in private_keys. If the user mixes up the
@@ -445,8 +409,11 @@ int main(int argc, char *const *argv)
     int fips_mode = 0;
     int parallelize = 0;
     int use_tls13 = 0;
+    int non_blocking = 0;
+    long int bytes = 0;
     conn_settings.session_ticket = 1;
     conn_settings.session_cache = 1;
+    conn_settings.max_conns = -1;
 
     struct option long_options[] = {
         {"ciphers", required_argument, NULL, 'c'},
@@ -468,13 +435,18 @@ int main(int argc, char *const *argv)
         {"stk-file", required_argument, 0, 'a'},
         {"no-session-ticket", no_argument, 0, 'T'},
         {"corked-io", no_argument, 0, 'C'},
+        {"max-conns", optional_argument, 0, 'X'},
         {"tls13", no_argument, 0, '3'},
+        {"https-server", no_argument, 0, 'w'},
+        {"https-bench", required_argument, 0, 'b'},
+        {"alpn", required_argument, 0, 'A'},
+        {"non-blocking", no_argument, 0, 'B'},
         /* Per getopt(3) the last element of the array has to be filled with all zeros */
         { 0 },
     };
     while (1) {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "c:hmnst:d:iTC", long_options, &option_index);
+        int c = getopt_long(argc, argv, "c:hmnst:d:iTCX::wb:A:", long_options, &option_index);
         if (c == -1) {
             break;
         }
@@ -549,6 +521,28 @@ int main(int argc, char *const *argv)
             break;
         case '3':
             use_tls13 = 1;
+            break;
+        case 'X':
+            if (optarg == NULL) {
+                conn_settings.max_conns = 1;
+            } else {
+                conn_settings.max_conns = atoi(optarg);
+            }
+            break;
+        case 'w':
+            fprintf(stdout, "Running s2nd in simple https server mode\n");
+            conn_settings.https_server = 1;
+            break;
+        case 'b':
+            bytes = strtoul(optarg, NULL, 10);
+            GUARD_EXIT(bytes, "https-bench bytes needs to be some positive long value.");
+            conn_settings.https_bench = bytes;
+            break;
+        case 'A':
+            alpn = optarg;
+            break;
+        case 'B':
+            non_blocking = 1;
             break;
         case '?':
         default:
@@ -637,7 +631,7 @@ int main(int argc, char *const *argv)
 #endif
     }
 
-    if (use_tls13 && S2N_IN_TEST) {
+    if (use_tls13) {
         GUARD_EXIT(s2n_enable_tls13(), "Error enabling TLS1.3");
     }
 
@@ -759,14 +753,36 @@ int main(int argc, char *const *argv)
         sigaction(SIGCHLD, &sa, NULL);
     }
 
+    if (alpn) {
+        const char *protocols[] = { alpn };
+        GUARD_EXIT(s2n_config_set_protocol_preferences(config, protocols, s2n_array_len(protocols)), "Failed to set alpn");
+    }
+
     int fd;
     while ((fd = accept(sockfd, ai->ai_addr, &ai->ai_addrlen)) > 0) {
+
+        if (non_blocking) {
+            int flags = fcntl(sockfd, F_GETFL, 0);
+            if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                fprintf(stderr, "fcntl error: %s\n", strerror(errno));
+                exit(1);
+            }
+        }
 
         if (!parallelize) {
             int rc = handle_connection(fd, config, conn_settings);
             close(fd);
             if (rc < 0) {
                 exit(rc);
+            }
+
+            /* If max_conns was set, then exit after it is reached. Otherwise
+             * unlimited connections are allow, so ignore the variable. */
+            if (conn_settings.max_conns > 0) {
+                if (conn_settings.max_conns-- == 1) {
+                    GUARD_EXIT(s2n_cleanup(),  "Error running s2n_cleanup()");
+                    exit(0);
+                }
             }
         } else {
             /* Fork Process, one for the Acceptor (parent), and another for the Handler (child). */
@@ -787,7 +803,6 @@ int main(int argc, char *const *argv)
                 continue;
             }
         }
-
     }
 
     GUARD_EXIT(s2n_cleanup(),  "Error running s2n_cleanup()");

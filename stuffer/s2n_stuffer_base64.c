@@ -32,7 +32,7 @@ static const uint8_t b64[64] = {
  *
  * b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
  *
- * for i in range(0, 255):
+ * for i in range(0, 256):
  *     if chr(i) in b64:
  *         print str(b64.index(chr(i))) + ", ",
  *      else:
@@ -41,7 +41,7 @@ static const uint8_t b64[64] = {
  *      if (i + 1) % 16 == 0:
  *          print
  *
- * Note that '=' maps to 64. 
+ * Note that '=' maps to 64.
  */
 static const uint8_t b64_inverse[256] = {
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -59,18 +59,18 @@ static const uint8_t b64_inverse[256] = {
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
 };
 
-int s2n_is_base64_char(char c)
+bool s2n_is_base64_char(unsigned char c)
 {
-    return (b64_inverse[(uint8_t) c] != 255);
+    return (b64_inverse[*((uint8_t*)(&c))] != 255);
 }
 
 /**
  * NOTE:
  * In general, shift before masking. This avoids needing to worry about how the
- * signed bit may be handled. 
+ * signed bit may be handled.
  */
 int s2n_stuffer_read_base64(struct s2n_stuffer *stuffer, struct s2n_stuffer *out)
 {
@@ -98,7 +98,7 @@ int s2n_stuffer_read_base64(struct s2n_stuffer *stuffer, struct s2n_stuffer *out
         }
 
         /* The first two characters can never be '=' and in general
-         * everything has to be a valid character. 
+         * everything has to be a valid character.
          */
         S2N_ERROR_IF(value1 == 64 || value2 == 64 || value2 == 255 || value3 == 255 || value4 == 255, S2N_ERR_INVALID_BASE64);
 
@@ -118,23 +118,27 @@ int s2n_stuffer_read_base64(struct s2n_stuffer *stuffer, struct s2n_stuffer *out
             value4 = 0;
         }
 
+        /* Advance by bytes_this_round, and then fill in the data */
+        GUARD(s2n_stuffer_skip_write(out, bytes_this_round));
+        uint8_t *ptr = out->blob.data + out->write_cursor - bytes_this_round;
+
         /* value1 maps to the first 6 bits of the first data byte */
         /* value2's top two bits are the rest */
-        uint8_t c = ((value1 << 2) & 0xfc) | ((value2 >> 4) & 0x03);
-        GUARD(s2n_stuffer_write_uint8(out, c));
+        *ptr = ((value1 << 2) & 0xfc) | ((value2 >> 4) & 0x03);
+        ptr++;
 
         if (bytes_this_round > 1) {
             /* Put the next four bits in the second data byte */
             /* Put the next four bits in the third data byte */
-            c = ((value2 << 4) & 0xf0) | ((value3 >> 2) & 0x0f);
-            GUARD(s2n_stuffer_write_uint8(out, c));
+            *ptr = ((value2 << 4) & 0xf0) | ((value3 >> 2) & 0x0f);
+            ptr++;
         }
 
         if (bytes_this_round > 2) {
             /* Put the next two bits in the third data byte */
             /* Put the next six bits in the fourth data byte */
-            c = ((value3 << 6) & 0xc0) | (value4 & 0x3f);
-            GUARD(s2n_stuffer_write_uint8(out, c));
+            *ptr = ((value3 << 6) & 0xc0) | (value4 & 0x3f);
+            ptr++;
         }
 
     } while (bytes_this_round == 3);
@@ -156,12 +160,12 @@ int s2n_stuffer_write_base64(struct s2n_stuffer *stuffer, struct s2n_stuffer *in
         o.data[0] = b64[(i.data[0] >> 2) & 0x3f];
 
         /* Take the bottom 2-bits of the first data byte -  0b00110000 = 0x30
-         * and take the top 4-bits of the second data byte - 0b00001111 = 0x0f 
+         * and take the top 4-bits of the second data byte - 0b00001111 = 0x0f
          */
         o.data[1] = b64[((i.data[0] << 4) & 0x30) | ((i.data[1] >> 4) & 0x0f)];
 
         /* Take the bottom 4-bits of the second data byte - 0b00111100 = 0x3c
-         * and take the top 2-bits of the third data byte - 0b00000011 = 0x03 
+         * and take the top 2-bits of the third data byte - 0b00000011 = 0x03
          */
         o.data[2] = b64[((i.data[1] << 2) & 0x3c) | ((i.data[2] >> 6) & 0x03)];
 
@@ -179,7 +183,7 @@ int s2n_stuffer_write_base64(struct s2n_stuffer *stuffer, struct s2n_stuffer *in
         uint8_t c = i.data[0];
 
         /* We at least one data byte left to encode, encode
-         * its first six bits 
+         * its first six bits
          */
         o.data[0] = b64[(c >> 2) & 0x3f];
 

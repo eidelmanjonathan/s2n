@@ -32,7 +32,7 @@
 /* Just to get access to the static functions / variables we need to test */
 #include "tls/s2n_handshake_io.c"
 
-static message_type_t invalid_handshake[S2N_MAX_HANDSHAKE_LENGTH];
+static message_type_t invalid_handshake[S2N_MAX_HANDSHAKE_LENGTH] = { 0 };
 
 static int expected_handler_called;
 static int unexpected_handler_called;
@@ -50,7 +50,7 @@ static int s2n_test_expected_handler(struct s2n_connection* conn)
 }
 
 static int s2n_setup_handler_to_expect(message_type_t expected, uint8_t direction) {
-    for (int i = 0; i < sizeof(tls13_state_machine) / sizeof(struct s2n_handshake_action); i++) {
+    for (int i = 0; i < s2n_array_len(tls13_state_machine); i++) {
         tls13_state_machine[i].handler[0] = s2n_test_handler;
         tls13_state_machine[i].handler[1] = s2n_test_handler;
     }
@@ -63,7 +63,7 @@ static int s2n_setup_handler_to_expect(message_type_t expected, uint8_t directio
     return 0;
 }
 
-int s2n_test_write_header(struct s2n_stuffer *output, uint8_t record_type, uint8_t message_type)
+static int s2n_test_write_header(struct s2n_stuffer *output, uint8_t record_type, uint8_t message_type)
 {
     GUARD(s2n_stuffer_write_uint8(output, record_type));
 
@@ -102,14 +102,16 @@ int main(int argc, char **argv)
     uint16_t valid_tls13_handshakes[S2N_HANDSHAKES_COUNT];
     int valid_tls13_handshakes_size = 0;
     for (int i = 0; i < S2N_HANDSHAKES_COUNT; i++) {
-        if( memcmp(tls13_handshakes, invalid_handshake, S2N_MAX_HANDSHAKE_LENGTH) != 0) {
+        if(memcmp(tls13_handshakes[i], invalid_handshake, S2N_MAX_HANDSHAKE_LENGTH) != 0) {
             valid_tls13_handshakes[valid_tls13_handshakes_size] = i;
             valid_tls13_handshakes_size++;
         }
     }
+    EXPECT_TRUE(valid_tls13_handshakes_size > 0);
+    EXPECT_TRUE(valid_tls13_handshakes_size < S2N_HANDSHAKES_COUNT);
 
     /* Use handler stubs to avoid errors in handler implementation */
-    for (int i = 0; i < sizeof(tls13_state_machine) / sizeof(struct s2n_handshake_action); i++) {
+    for (int i = 0; i < s2n_array_len(tls13_state_machine); i++) {
         tls13_state_machine[i].handler[0] = s2n_test_handler;
         tls13_state_machine[i].handler[1] = s2n_test_handler;
     }
@@ -134,7 +136,7 @@ int main(int argc, char **argv)
             conn->handshake.handshake_type = handshake;
 
             for (int j = 0; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
-                if (tls13_handshakes[i][j] == CLIENT_CHANGE_CIPHER_SPEC) {
+                if (tls13_handshakes[handshake][j] == CLIENT_CHANGE_CIPHER_SPEC) {
                     conn->handshake.message_number = j - 1;
 
                     EXPECT_SUCCESS(s2n_advance_message(conn));
@@ -161,7 +163,7 @@ int main(int argc, char **argv)
             conn->handshake.handshake_type = handshake;
 
             for (int j = 0; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
-                if (tls13_handshakes[i][j] == SERVER_CHANGE_CIPHER_SPEC) {
+                if (tls13_handshakes[handshake][j] == SERVER_CHANGE_CIPHER_SPEC) {
                     conn->handshake.message_number = j - 1;
 
                     EXPECT_SUCCESS(s2n_advance_message(conn));
@@ -188,7 +190,7 @@ int main(int argc, char **argv)
             conn->handshake.handshake_type = handshake;
 
             for (int j = 0; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
-                if (tls13_handshakes[i][j] == SERVER_CHANGE_CIPHER_SPEC) {
+                if (tls13_handshakes[handshake][j] == SERVER_CHANGE_CIPHER_SPEC) {
                     conn->handshake.message_number = j - 1;
 
                     EXPECT_SUCCESS(s2n_advance_message(conn));
@@ -215,7 +217,7 @@ int main(int argc, char **argv)
             conn->handshake.handshake_type = handshake;
 
             for (int j = 0; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
-                if (tls13_handshakes[i][j] == CLIENT_CHANGE_CIPHER_SPEC) {
+                if (tls13_handshakes[handshake][j] == CLIENT_CHANGE_CIPHER_SPEC) {
                     conn->handshake.message_number = j - 1;
 
                     EXPECT_SUCCESS(s2n_advance_message(conn));
@@ -240,7 +242,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&input, 0));
         EXPECT_SUCCESS(s2n_connection_set_io_stuffers(&input, NULL, conn));
 
-        GUARD(s2n_setup_handler_to_expect(SERVER_CHANGE_CIPHER_SPEC, S2N_CLIENT));
+        EXPECT_SUCCESS(s2n_setup_handler_to_expect(SERVER_CHANGE_CIPHER_SPEC, S2N_CLIENT));
 
         for (int i = 0; i < valid_tls13_handshakes_size; i++) {
             int handshake = valid_tls13_handshakes[i];
@@ -255,12 +257,16 @@ int main(int argc, char **argv)
 
                 EXPECT_SUCCESS(s2n_handshake_read_io(conn));
 
-                EXPECT_EQUAL(conn->handshake.message_number, j);
+                if (tls13_handshakes[handshake][j] == SERVER_CHANGE_CIPHER_SPEC) {
+                    EXPECT_EQUAL(conn->handshake.message_number, j + 1);
+                } else {
+                    EXPECT_EQUAL(conn->handshake.message_number, j);
+                }
+
                 EXPECT_FALSE(unexpected_handler_called);
                 EXPECT_TRUE(expected_handler_called);
 
                 EXPECT_SUCCESS(s2n_stuffer_wipe(&input));
-                break;
             }
         }
 
@@ -277,7 +283,7 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&input, 0));
         EXPECT_SUCCESS(s2n_connection_set_io_stuffers(&input, NULL, conn));
 
-        GUARD(s2n_setup_handler_to_expect(CLIENT_CHANGE_CIPHER_SPEC, S2N_SERVER));
+        EXPECT_SUCCESS(s2n_setup_handler_to_expect(CLIENT_CHANGE_CIPHER_SPEC, S2N_SERVER));
 
         for (int i = 0; i < valid_tls13_handshakes_size; i++) {
             int handshake = valid_tls13_handshakes[i];
@@ -292,12 +298,16 @@ int main(int argc, char **argv)
 
                 EXPECT_SUCCESS(s2n_handshake_read_io(conn));
 
-                EXPECT_EQUAL(conn->handshake.message_number, j);
+                if (tls13_handshakes[handshake][j] == CLIENT_CHANGE_CIPHER_SPEC) {
+                    EXPECT_EQUAL(conn->handshake.message_number, j + 1);
+                } else {
+                    EXPECT_EQUAL(conn->handshake.message_number, j);
+                }
+
                 EXPECT_FALSE(unexpected_handler_called);
                 EXPECT_TRUE(expected_handler_called);
 
                 EXPECT_SUCCESS(s2n_stuffer_wipe(&input));
-                break;
             }
         }
 
@@ -305,7 +315,162 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_connection_free(conn));
     }
 
-    /* Test: TLS1.3 s2n_conn_set_handshake_type only sets FULL_HANDSHAKE */
+    /* Test: TLS1.3 s2n_handshake_read_io should accept only the expected message */
+    {
+        /* TLS1.3 should accept the expected message */
+        {
+            struct s2n_connection *conn = s2n_connection_new(S2N_SERVER);
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer input;
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&input, 0));
+            EXPECT_SUCCESS(s2n_connection_set_io_stuffers(&input, NULL, conn));
+
+            conn->handshake.handshake_type = 0;
+            conn->handshake.message_number = 0;
+            EXPECT_SUCCESS(s2n_setup_handler_to_expect(CLIENT_HELLO, S2N_SERVER));
+
+            EXPECT_SUCCESS(s2n_test_write_header(&input, TLS_HANDSHAKE, TLS_CLIENT_HELLO));
+            EXPECT_SUCCESS(s2n_handshake_read_io(conn));
+
+            EXPECT_EQUAL(conn->handshake.message_number, 1);
+            EXPECT_FALSE(unexpected_handler_called);
+            EXPECT_TRUE(expected_handler_called);
+
+            EXPECT_SUCCESS(s2n_stuffer_free(&input));
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* TLS1.3 should error for an unexpected message */
+        {
+            struct s2n_connection *conn = s2n_connection_new(S2N_SERVER);
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer input;
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&input, 0));
+            EXPECT_SUCCESS(s2n_connection_set_io_stuffers(&input, NULL, conn));
+
+            conn->handshake.handshake_type = 0;
+            conn->handshake.message_number = 0;
+            EXPECT_SUCCESS(s2n_setup_handler_to_expect(CLIENT_HELLO, S2N_SERVER));
+
+            EXPECT_SUCCESS(s2n_test_write_header(&input, TLS_HANDSHAKE, TLS_CERTIFICATE));
+            EXPECT_FAILURE_WITH_ERRNO(s2n_handshake_read_io(conn), S2N_ERR_BAD_MESSAGE);
+
+            EXPECT_EQUAL(conn->handshake.message_number, 0);
+            EXPECT_FALSE(unexpected_handler_called);
+            EXPECT_FALSE(expected_handler_called);
+
+            EXPECT_SUCCESS(s2n_stuffer_free(&input));
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+
+        /* TLS1.3 should error for an expected message from the wrong writer */
+        {
+            struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);
+            conn->actual_protocol_version = S2N_TLS13;
+
+            struct s2n_stuffer input;
+            EXPECT_SUCCESS(s2n_stuffer_growable_alloc(&input, 0));
+            EXPECT_SUCCESS(s2n_connection_set_io_stuffers(&input, NULL, conn));
+
+            conn->handshake.handshake_type = 0;
+            conn->handshake.message_number = 0;
+            EXPECT_SUCCESS(s2n_setup_handler_to_expect(CLIENT_HELLO, S2N_SERVER));
+
+            EXPECT_SUCCESS(s2n_test_write_header(&input, TLS_HANDSHAKE, TLS_CLIENT_HELLO));
+            EXPECT_FAILURE_WITH_ERRNO(s2n_handshake_read_io(conn), S2N_ERR_BAD_MESSAGE);
+
+            EXPECT_EQUAL(conn->handshake.message_number, 0);
+            EXPECT_FALSE(unexpected_handler_called);
+            EXPECT_FALSE(expected_handler_called);
+
+            EXPECT_SUCCESS(s2n_stuffer_free(&input));
+            EXPECT_SUCCESS(s2n_connection_free(conn));
+        }
+    }
+
+    /* Test: TLS 1.3 handshakes all follow CCS middlebox compatibility rules.
+     * RFC: https://tools.ietf.org/html/rfc8446#appendix-D.4 */
+    {
+        bool change_cipher_spec_found;
+        uint32_t handshake_type;
+        message_type_t *messages;
+
+        /* Test: "If not offering early data, the client sends a dummy change_cipher_spec record immediately before
+         *       its second flight. This may either be before its second ClientHello or before its encrypted handshake flight." */
+        for (size_t i = 0; i < valid_tls13_handshakes_size; i++) {
+            change_cipher_spec_found = false;
+            handshake_type = valid_tls13_handshakes[i];
+            messages = tls13_handshakes[handshake_type];
+
+            for (size_t j = 1; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
+
+                /* Ignore initial handshakes */
+                if (!IS_NEGOTIATED(handshake_type)) {
+                    continue;
+                }
+
+                /* Is it the second client flight?
+                 * Have we switched from the server sending to the client sending? */
+                if (tls13_state_machine[messages[j]].writer != 'C'
+                        || tls13_state_machine[messages[j - 1]].writer != 'S') {
+                    continue;
+                }
+
+                EXPECT_EQUAL(messages[j], CLIENT_CHANGE_CIPHER_SPEC);
+                EXPECT_EQUAL(tls13_state_machine[messages[j + 1]].writer, 'C');
+
+                /* CCS message found. We are done with this handshake. */
+                change_cipher_spec_found = true;
+                break;
+            }
+
+            if (IS_NEGOTIATED(handshake_type)) {
+                EXPECT_TRUE(change_cipher_spec_found);
+            }
+        }
+
+        /* Test: "If offering early data, the [change_cipher_spce] record is placed immediately after the first ClientHello."
+         *
+         * TODO: This can't be tested yet because S2N doesn't support early data. */
+
+        /* Test: "The server sends a dummy change_cipher_spec record immediately after its first handshake message.
+         *       This may either be after a ServerHello or a HelloRetryRequest." */
+        for (size_t i = 0; i < valid_tls13_handshakes_size; i++) {
+            change_cipher_spec_found = false;
+            handshake_type = valid_tls13_handshakes[i];
+            messages = tls13_handshakes[handshake_type];
+
+            for (size_t j = 1; j < S2N_MAX_HANDSHAKE_LENGTH; j++) {
+
+                /* Ignore initial handshakes */
+                if (!IS_NEGOTIATED(handshake_type)) {
+                    continue;
+                }
+
+                /* Is it the first server flight?
+                 * Have we switched from the client sending to the server sending? */
+                if (tls13_state_machine[messages[j]].writer != 'S'
+                        || tls13_state_machine[messages[j-1]].writer != 'C') {
+                    continue;
+                }
+
+                EXPECT_EQUAL(messages[j + 1], SERVER_CHANGE_CIPHER_SPEC);
+                EXPECT_TRUE(messages[j] == SERVER_HELLO || messages[j] == HELLO_RETRY_MSG);
+
+                /* CCS message found. We are done with this handshake. */
+                change_cipher_spec_found = true;
+                break;
+            }
+
+            if (IS_NEGOTIATED(handshake_type)) {
+                EXPECT_TRUE(change_cipher_spec_found);
+            }
+        }
+    }
+
+    /* Test: TLS1.3 s2n_conn_set_handshake_type sets FULL_HANDSHAKE, HELLO_RETRY_REQUEST, and CLIENT_AUTH*/
     {
         struct s2n_connection *conn = s2n_connection_new(S2N_CLIENT);
 
@@ -330,10 +495,16 @@ int main(int argc, char **argv)
         EXPECT_TRUE(conn->handshake.handshake_type & WITH_SESSION_TICKET );
         EXPECT_TRUE(conn->handshake.handshake_type & CLIENT_AUTH );
 
-        /* Verify that tls1.3 DOES NOT set the flags */
+        /* Verify that tls1.3 ONLY sets the CLIENT_AUTH flag */
         conn->actual_protocol_version = S2N_TLS13;
         EXPECT_SUCCESS(s2n_conn_set_handshake_type(conn));
-        EXPECT_EQUAL(conn->handshake.handshake_type, NEGOTIATED | FULL_HANDSHAKE);
+        EXPECT_EQUAL(conn->handshake.handshake_type, NEGOTIATED | FULL_HANDSHAKE | CLIENT_AUTH);
+
+        /* Verify that tls1.3 DOES NOT set the flags even when a HelloRetryRequest is in the mix */
+        conn->actual_protocol_version = S2N_TLS13;
+        conn->handshake.handshake_type = INITIAL | HELLO_RETRY_REQUEST;
+        EXPECT_SUCCESS(s2n_conn_set_handshake_type(conn));
+        EXPECT_EQUAL(conn->handshake.handshake_type, NEGOTIATED | FULL_HANDSHAKE | CLIENT_AUTH | HELLO_RETRY_REQUEST);
 
         EXPECT_SUCCESS(s2n_connection_free(conn));
     }
@@ -348,6 +519,9 @@ int main(int argc, char **argv)
 
         conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE;
         EXPECT_STRING_EQUAL("NEGOTIATED|FULL_HANDSHAKE", s2n_connection_get_handshake_type_name(conn));
+
+        conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE | HELLO_RETRY_REQUEST;
+        EXPECT_STRING_EQUAL("NEGOTIATED|FULL_HANDSHAKE|HELLO_RETRY_REQUEST", s2n_connection_get_handshake_type_name(conn));
 
         const char* all_flags_handshake_type_name = "NEGOTIATED|FULL_HANDSHAKE|CLIENT_AUTH|WITH_SESSION_TICKET|NO_CLIENT_CERT";
         conn->handshake.handshake_type = NEGOTIATED | FULL_HANDSHAKE | CLIENT_AUTH | WITH_SESSION_TICKET | NO_CLIENT_CERT;
@@ -385,12 +559,40 @@ int main(int argc, char **argv)
 
         conn->handshake.handshake_type = test_handshake_type;
 
-        for (int i=0; i < sizeof(expected) / sizeof(char *); i++) {
+        for (int i = 0; i < s2n_array_len(expected); i++) {
             conn->handshake.message_number = i;
             EXPECT_STRING_EQUAL(expected[i], s2n_connection_get_last_message_name(conn));
         }
 
         EXPECT_SUCCESS(s2n_connection_free(conn));
+    }
+
+    /* Test: TLS 1.3 message types are all properly printed for client auth */
+    {
+        uint32_t test_handshake_type = NEGOTIATED | FULL_HANDSHAKE | CLIENT_AUTH;
+        const char* expected[] = { "CLIENT_HELLO",
+            "SERVER_HELLO", "SERVER_CHANGE_CIPHER_SPEC", "ENCRYPTED_EXTENSIONS", "SERVER_CERT_REQ", "SERVER_CERT", "SERVER_CERT_VERIFY", "SERVER_FINISHED",
+            "CLIENT_CHANGE_CIPHER_SPEC", "CLIENT_CERT", "CLIENT_CERT_VERIFY", "CLIENT_FINISHED",
+            "APPLICATION_DATA" };
+
+        struct s2n_connection *conn = s2n_connection_new(S2N_SERVER);
+        conn->actual_protocol_version = S2N_TLS13;
+
+        conn->handshake.handshake_type = test_handshake_type;
+
+        for (int i = 0; i < s2n_array_len(expected); i++) {
+            conn->handshake.message_number = i;
+            EXPECT_STRING_EQUAL(expected[i], s2n_connection_get_last_message_name(conn));
+        }
+
+        EXPECT_SUCCESS(s2n_connection_free(conn));
+    }
+
+    /* Test: Make sure not to miss out populating any message names */
+    {
+        for (int i = CLIENT_HELLO; i <= APPLICATION_DATA; i++) {
+            EXPECT_NOT_NULL(message_names[i]);
+        }
     }
 
     END_TEST();

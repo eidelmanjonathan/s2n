@@ -57,7 +57,7 @@ fi
 FIPS_TEST_MSG=""
 if [ -n "${S2N_TEST_IN_FIPS_MODE}" ];
 then
-    if [[ $TEST_NAME == *bike* ]] || [[ $TEST_NAME == *sike* ]]; then
+    if [[ $TEST_NAME == *bike* ]] || [[ $TEST_NAME == *sike* ]] || [[ $TEST_NAME == *kyber* ]]; then
         printf "Skipping %s because PQ crypto is not supported in FIPS mode...\n" ${TEST_NAME}
         exit 0
     else
@@ -78,7 +78,7 @@ cp -r ./corpus/${TEST_NAME}/. "${TEMP_CORPUS_DIR}"
 printf "Running %-s %-40s for %5d sec with %2d threads... " "${FIPS_TEST_MSG}" ${TEST_NAME} ${FUZZ_TIMEOUT_SEC} ${NUM_CPU_THREADS}
 
 # Setup and clean profile structure if FUZZ_COVERAGE is enabled, otherwise run as normal
-if [[ -v FUZZ_COVERAGE ]]; then
+if [[ ! -z "$FUZZ_COVERAGE" ]]; then
     mkdir -p "./profiles/${TEST_NAME}"
     rm -f ./profiles/${TEST_NAME}/*.profraw
     LLVM_PROFILE_FILE="./profiles/${TEST_NAME}/${TEST_NAME}.%p.profraw" ./${TEST_NAME} ${LIBFUZZER_ARGS} ${TEMP_CORPUS_DIR} > ${TEST_NAME}_output.txt 2>&1 || ACTUAL_TEST_FAILURE=1
@@ -98,13 +98,13 @@ declare -i TARGET_COV=0
 # Coverage is overlayed on source code in ${TEST_NAME}_cov.html, and coverage statistics are available in ${TEST_NAME}_cov.txt
 # If using LLVM version 9 or greater, coverage is output in LCOV format instead of HTML
 # All files are stored in the s2n coverage directory
-if [[ -v FUZZ_COVERAGE ]]; then
+if [[ ! -z "$FUZZ_COVERAGE" ]]; then
     mkdir -p ${COVERAGE_DIR}/fuzz
     llvm-profdata merge -sparse ./profiles/${TEST_NAME}/*.profraw -o ./profiles/${TEST_NAME}/${TEST_NAME}.profdata
     llvm-cov report -instr-profile=./profiles/${TEST_NAME}/${TEST_NAME}.profdata ${S2N_ROOT}/lib/libs2n.so ${FUZZCOV_SOURCES} -show-functions > ${COVERAGE_DIR}/fuzz/${TEST_NAME}_cov.txt
 
     # Use LCOV format instead of HTML if the LLVM version we're using supports it
-    if [[ $(grep -Eo "[0-9]*" <<< `llvm-cov --version` | head -1) > 8 ]]; then
+    if [[ $(grep -Eo "[0-9]*" <<< `llvm-cov --version` | head -1) -gt 8 ]]; then
         llvm-cov export -instr-profile=./profiles/${TEST_NAME}/${TEST_NAME}.profdata ${S2N_ROOT}/lib/libs2n.so ${FUZZCOV_SOURCES} -format=lcov > ${COVERAGE_DIR}/fuzz/${TEST_NAME}_cov.info
         genhtml -q -o ${COVERAGE_DIR}/html/${TEST_NAME} ${COVERAGE_DIR}/fuzz/${TEST_NAME}_cov.info
     else
@@ -115,7 +115,7 @@ if [[ -v FUZZ_COVERAGE ]]; then
     TARGET_FUNCS=`grep -Pzo "(?<=/\* Target Functions: )[\w\s]*" ${TEST_NAME}.c | tr -d "\0"`
 
     # Find line coverage statistics for target functions
-    if [[ ! -z TARGET_FUNCS ]];
+    if [[ ! -z "$TARGET_FUNCS" ]];
     then
         for TARGET in ${TARGET_FUNCS}
         do
@@ -131,7 +131,7 @@ then
 
     # Output target function coverage percentage if target functions are defined and fuzzing coverage is enabled
     # Otherwise, print number of features covered
-    if [[ -v FUZZ_COVERAGE && ! -z TARGET_FUNCS && $EXPECTED_TEST_FAILURE != 1 && $TARGET_TOTAL != 0 ]];
+    if [[ ! -z "$FUZZ_COVERAGE" && ! -z "$TARGET_FUNCS" && "$EXPECTED_TEST_FAILURE" != 1 && "$TARGET_TOTAL" != 0 ]];
     then
         printf ", %6.2f%% target coverage" "$(( 10000 * ($TARGET_TOTAL - $TARGET_COV) / $TARGET_TOTAL ))e-2"
     else

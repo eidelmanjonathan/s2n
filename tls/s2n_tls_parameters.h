@@ -58,14 +58,16 @@
 #define TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256  0xCC, 0xA9
 #define TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256      0xCC, 0xAA
 
-/* TLS Hybrid post-quantum definitions from https://tools.ietf.org/html/draft-campagna-tls-bike-sike-hybrid-02 */
+/* TLS Hybrid post-quantum definitions from https://tools.ietf.org/html/draft-campagna-tls-bike-sike-hybrid */
 #define TLS_ECDHE_BIKE_RSA_WITH_AES_256_GCM_SHA384 0xFF, 0x04
 #define TLS_ECDHE_SIKE_RSA_WITH_AES_256_GCM_SHA384 0xFF, 0x08
+#define TLS_ECDHE_KYBER_RSA_WITH_AES_256_GCM_SHA384 0xFF, 0x0C
 #define TLS_EXTENSION_PQ_KEM_PARAMETERS 0xFE01
 #define TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R1 1
 #define TLS_PQ_KEM_EXTENSION_ID_BIKE1_L1_R2 13
 #define TLS_PQ_KEM_EXTENSION_ID_SIKE_P503_R1 10
-#define TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2 16
+#define TLS_PQ_KEM_EXTENSION_ID_SIKE_P434_R2 19
+#define TLS_PQ_KEM_EXTENSION_ID_KYBER_512_R2 23
 
 /* From https://tools.ietf.org/html/rfc7507 */
 #define TLS_FALLBACK_SCSV                   0x56, 0x00
@@ -88,6 +90,7 @@
 #define TLS_EXTENSION_ALPN                 16
 #define TLS_EXTENSION_SCT_LIST             18
 #define TLS_EXTENSION_SESSION_TICKET       35
+#define TLS_EXTENSION_CERT_AUTHORITIES     47
 #define TLS_EXTENSION_RENEGOTIATION_INFO   65281
 
 /* TLS 1.3 extensions from https://tools.ietf.org/html/rfc8446#section-4.2 */
@@ -155,6 +158,7 @@
 #define TLS_SIGNATURE_SCHEME_LIST_MAX_LEN               32
 
 /* The TLS record types we support */
+#define SSLv2_CLIENT_HELLO     1
 #define TLS_CHANGE_CIPHER_SPEC 20
 #define TLS_ALERT              21
 #define TLS_HANDSHAKE          22
@@ -190,8 +194,14 @@
  */
 #define S2N_TLS_RECORD_HEADER_LENGTH    5
 #define S2N_TLS_MAXIMUM_FRAGMENT_LENGTH 16384
-#define S2N_TLS_MAXIMUM_RECORD_LENGTH   (S2N_TLS_MAXIMUM_FRAGMENT_LENGTH + S2N_TLS_RECORD_HEADER_LENGTH)
+/* Maximum TLS record length allows for 2048 octets of compression expansion and padding */
+#define S2N_TLS_MAXIMUM_RECORD_LENGTH   (S2N_TLS_MAXIMUM_FRAGMENT_LENGTH + S2N_TLS_RECORD_HEADER_LENGTH + 2048)
 #define S2N_TLS_MAX_FRAG_LEN_EXT_NONE   0
+
+/* TLS1.3 has a max fragment length of 2^14 + 1 byte for the content type */
+#define S2N_TLS13_MAXIMUM_FRAGMENT_LENGTH 16385
+/* Max encryption overhead is 255 for AEAD padding */
+#define S2N_TLS13_MAXIMUM_RECORD_LENGTH   (S2N_TLS13_MAXIMUM_FRAGMENT_LENGTH + S2N_TLS_RECORD_HEADER_LENGTH + 255)
 
 /* The maximum size of an SSL2 message is 2^14 - 1, as neither of the first two
  * bits in the length field are usable. Per;
@@ -217,14 +227,21 @@
 #define S2N_DEFAULT_RECORD_LENGTH 8092
 #define S2N_DEFAULT_FRAGMENT_LENGTH (S2N_DEFAULT_RECORD_LENGTH - S2N_TLS_RECORD_HEADER_LENGTH)
 
+/* S2N_LARGE_RECORD_LENGTH is used for initializing output buffers, we use the largest
+ * possible value of all supported protocols to avoid branching at runtime
+ */
 #define S2N_LARGE_RECORD_LENGTH S2N_TLS_MAXIMUM_RECORD_LENGTH
 #define S2N_LARGE_FRAGMENT_LENGTH S2N_TLS_MAXIMUM_FRAGMENT_LENGTH
+#define S2N_TLS13_LARGE_FRAGMENT_LENGTH S2N_TLS13_MAXIMUM_FRAGMENT_LENGTH
 
 /* Cap dynamic record resize threshold to 8M */
 #define S2N_TLS_MAX_RESIZE_THRESHOLD (1024 * 1024 * 8)
 
 /* Put a 64k cap on the size of any handshake message */
 #define S2N_MAXIMUM_HANDSHAKE_MESSAGE_LENGTH (64 * 1024)
+
+/* Maximum size for full encoded TLSInnerPlaintext (https://tools.ietf.org/html/rfc8446#section-5.4) */
+#define S2N_MAXIMUM_INNER_PLAINTEXT_LENGTH ((1 << 14) + 1)
 
 /* Alert messages are always 2 bytes long */
 #define S2N_ALERT_LENGTH 2

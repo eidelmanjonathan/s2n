@@ -25,13 +25,14 @@
 
 #include "api/s2n.h"
 #include "stuffer/s2n_stuffer.h"
+#include "tests/s2n_test.h"
 #include "utils/s2n_safety.h"
 
-
-int LLVMFuzzerTestOneInput(const uint8_t *buf, size_t len)
+int s2n_fuzz_test(const uint8_t *buf, size_t len)
 {
     struct s2n_stuffer in = {0};
     struct s2n_stuffer out = {0};
+
     GUARD(s2n_stuffer_alloc(&in, len + 1));
     GUARD(s2n_stuffer_alloc(&out, len));
     GUARD(s2n_stuffer_write_bytes(&in, buf, len));
@@ -47,5 +48,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *buf, size_t len)
     GUARD(s2n_stuffer_free(&in));
     GUARD(s2n_stuffer_free(&out));
 
-    return 0;
+    return S2N_SUCCESS;
 }
+
+S2N_FUZZ_TARGET(NULL, s2n_fuzz_test, NULL)

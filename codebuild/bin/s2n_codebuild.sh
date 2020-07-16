@@ -20,20 +20,9 @@ source codebuild/bin/s2n_setup_env.sh
 # Some Test install scripts use curl commands to download files from S3, but those commands don't work when forced to load OpenSSL 1.1.1
 source codebuild/bin/s2n_override_paths.sh
 
-if [[ "$BUILD_S2N" == "true" ]]; then
-    codebuild/bin/run_cppcheck.sh "$CPPCHECK_INSTALL_DIR";
-    codebuild/bin/copyright_mistake_scanner.sh;
-    codebuild/bin/grep_simple_mistakes.sh;
-fi
-
-if [[ "$BUILD_S2N" == "true" && "$OS_NAME" == "linux" ]]; then
-    codebuild/bin/run_kwstyle.sh;
-    codebuild/bin/cpp_style_comment_linter.sh;
-fi
-
 # Use prlimit to set the memlock limit to unlimited for linux. OSX is unlimited by default
 # Codebuild Containers aren't allowing prlimit changes (and aren't being caught with the usual cgroup check)
-if [[ "$OS_NAME" == "linux" && -v "$CODEBUILD_BUILD_ARN" ]]; then
+if [[ "$OS_NAME" == "linux" && -n "$CODEBUILD_BUILD_ARN" ]]; then
     PRLIMIT_LOCATION=`which prlimit`
     sudo -E ${PRLIMIT_LOCATION} --pid "$$" --memlock=unlimited:unlimited;
 fi
@@ -65,24 +54,31 @@ if [[ "$OS_NAME" == "linux" && "$TESTS" == "valgrind" ]]; then
     kill %1
 fi
 
-if [[ "$OS_NAME" == "linux" && (("$TESTS" == "integration") || ("$TESTS" == "unit")) ]]; then
+if [[ "$OS_NAME" == "linux" && ( ("$TESTS" == "integration") || ("$TESTS" == "integrationv2") ) ]]; then
     make -j $JOBS
 fi
 
 # Build and run unit tests with scan-build for osx. scan-build bundle isn't available for linux
-if [[ "$OS_NAME" == "osx" && "$TESTS" == "integration" ]]; then  
+if [[ "$OS_NAME" == "osx" && "$TESTS" == "integration" ]]; then
     scan-build --status-bugs -o /tmp/scan-build make -j$JOBS; STATUS=$?; test $STATUS -ne 0 && cat /tmp/scan-build/*/* ; [ "$STATUS" -eq "0" ];
 fi
 
+# Run Multiple tests on one flag.
+if [[ "$TESTS" == "ALL" || "$TESTS" == "sawHMACPlus" ]] && [[ "$OS_NAME" == "linux" ]]; then make -C tests/saw tmp/verify_HMAC.log tmp/verify_drbg.log sike failure-tests; fi
+
+# Run Individual tests
 if [[ "$TESTS" == "ALL" || "$TESTS" == "asan" ]]; then make clean; S2N_ADDRESS_SANITIZER=1 make -j $JOBS ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "integration" ]]; then make clean; make integration ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "integrationv2" ]]; then make clean; make integrationv2 ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "fuzz" ]]; then (make clean && make fuzz) ; fi
-if [[ "$TESTS" == "ALL" || "$TESTS" == "sawHMAC" ]] && [[ "$OS_NAME" == "linux" ]]; then make -C tests/saw/ tmp/"verify_s2n_hmac_$SAW_HMAC_TEST".log ; fi
-if [[ "$TESTS" == "ALL" || "$TESTS" == "sawDRBG" ]]; then make -C tests/saw tmp/verify_drbg.log ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "benchmark" ]]; then (make clean && make benchmark) ; fi
+if [[ "$TESTS" == "sawHMAC" ]] && [[ "$OS_NAME" == "linux" ]]; then make -C tests/saw/ tmp/verify_HMAC.log ; fi
+if [[ "$TESTS" == "sawDRBG" ]]; then make -C tests/saw tmp/verify_drbg.log ; fi
 if [[ "$TESTS" == "ALL" || "$TESTS" == "tls" ]]; then make -C tests/saw tmp/verify_handshake.log ; fi
-if [[ "$TESTS" == "ALL" || "$TESTS" == "sawHMACFailure" ]]; then make -C tests/saw failure-tests ; fi
-if [[ "$TESTS" == "ALL" || "$TESTS" == "sawSIKE_r1" ]]; then make -C tests/saw sike_r1 ; fi
-if [[ "$TESTS" == "ALL" || "$TESTS" == "sawBIKE_r1" ]]; then make -C tests/saw bike_r1 ; fi
+if [[ "$TESTS" == "sawHMACFailure" ]]; then make -C tests/saw failure-tests ; fi
+# Below runs sike r_1 r_2 and x86
+if [[ "$TESTS" == "sawSIKE" ]]; then make -C tests/saw sike ; fi
+if [[ "$TESTS" == "ALL" || "$TESTS" == "sawBIKE" ]]; then make -C tests/saw bike ; fi
 
 # Generate *.gcov files that can be picked up by the CodeCov.io Bash helper script. Don't run lcov or genhtml 
 # since those will delete .gcov files as they're processed.

@@ -35,6 +35,7 @@
 #define S2N_ERR_T_INTERNAL_START (S2N_ERR_T_INTERNAL << S2N_ERR_NUM_VALUE_BITS)
 #define S2N_ERR_T_USAGE_START (S2N_ERR_T_USAGE << S2N_ERR_NUM_VALUE_BITS)
 
+/* clang-format off */
 /* Order of values in this enum is important. New error values should be placed at the end of their respective category.
  * For example, a new TLS protocol related error belongs in the S2N_ERR_T_PROTO category. It should be placed
  * immediately before S2N_ERR_T_INTERNAL_START(the first value of he next category).
@@ -53,7 +54,8 @@ typedef enum {
     S2N_ERR_T_CLOSED_END,
 
     /* S2N_ERR_T_BLOCKED */
-    S2N_ERR_BLOCKED = S2N_ERR_T_BLOCKED_START,
+    S2N_ERR_IO_BLOCKED = S2N_ERR_T_BLOCKED_START,
+    S2N_ERR_ASYNC_BLOCKED,
     S2N_ERR_T_BLOCKED_END,
 
     /* S2N_ERR_T_ALERT */
@@ -83,6 +85,7 @@ typedef enum {
     S2N_ERR_ALLOW_MD5_FOR_FIPS_FAILED,
     S2N_ERR_DECODE_CERTIFICATE,
     S2N_ERR_DECODE_PRIVATE_KEY,
+    S2N_ERR_INVALID_HELLO_RETRY,
     S2N_ERR_INVALID_SIGNATURE_ALGORITHM,
     S2N_ERR_INVALID_SIGNATURE_SCHEME,
     S2N_ERR_EMPTY_SIGNATURE_SCHEME,
@@ -109,6 +112,14 @@ typedef enum {
     S2N_ERR_CANCELLED,
     S2N_ERR_PROTOCOL_DOWNGRADE_DETECTED,
     S2N_ERR_PQ_KEMS_DISALLOWED_IN_FIPS,
+    S2N_ERR_MAX_INNER_PLAINTEXT_SIZE,
+    S2N_ERR_RECORD_STUFFER_SIZE,
+    S2N_ERR_FRAGMENT_LENGTH_TOO_LARGE,
+    S2N_ERR_FRAGMENT_LENGTH_TOO_SMALL,
+    S2N_ERR_RECORD_STUFFER_NEEDS_DRAINING,
+    S2N_ERR_MISSING_EXTENSION,
+    S2N_ERR_UNSUPPORTED_EXTENSION,
+    S2N_ERR_DUPLICATE_EXTENSION,
     S2N_ERR_T_PROTO_END,
 
     /* S2N_ERR_T_INTERNAL */
@@ -123,6 +134,7 @@ typedef enum {
     S2N_ERR_NOMEM,
     S2N_ERR_NULL,
     S2N_ERR_SAFETY,
+    S2N_ERR_INITIALIZED,
     S2N_ERR_NOT_INITIALIZED,
     S2N_ERR_RANDOM_UNINITIALIZED,
     S2N_ERR_OPEN_RANDOM,
@@ -174,10 +186,17 @@ typedef enum {
     S2N_ERR_RECV_STUFFER_FROM_CONN,
     S2N_ERR_SEND_STUFFER_TO_CONN,
     S2N_ERR_PRECONDITION_VIOLATION,
+    S2N_ERR_POSTCONDITION_VIOLATION,
     S2N_ERR_INTEGER_OVERFLOW,
     S2N_ERR_ARRAY_INDEX_OOB,
     S2N_ERR_FREE_STATIC_BLOB,
     S2N_ERR_RESIZE_STATIC_BLOB,
+    S2N_ERR_NO_AVAILABLE_BORINGSSL_API,
+    S2N_ERR_RECORD_LENGTH_TOO_LARGE,
+    S2N_ERR_SET_DUPLICATE_VALUE,
+    S2N_ERR_INVALID_PARSED_EXTENSIONS,
+    S2N_ERR_ASYNC_CALLBACK_FAILED,
+    S2N_ERR_ASYNC_MORE_THAN_ONE,
     S2N_ERR_T_INTERNAL_END,
 
     /* S2N_ERR_T_USAGE */
@@ -222,12 +241,22 @@ typedef enum {
     S2N_ERR_INVALID_DYNAMIC_THRESHOLD,
     S2N_ERR_INVALID_ARGUMENT,
     S2N_ERR_NOT_IN_UNIT_TEST,
+    S2N_ERR_NOT_IN_TEST,
     S2N_ERR_UNSUPPORTED_CPU,
     S2N_ERR_SESSION_ID_TOO_SHORT,
     S2N_ERR_CONNECTION_CACHING_DISALLOWED,
     S2N_ERR_SESSION_TICKET_NOT_SUPPORTED,
     S2N_ERR_OCSP_NOT_SUPPORTED,
     S2N_ERR_INVALID_SIGNATURE_ALGORITHMS_PREFERENCES,
+    S2N_RSA_PSS_NOT_SUPPORTED,
+    S2N_ERR_INVALID_ECC_PREFERENCES,
+    S2N_ERR_INVALID_SECURITY_POLICY,
+    S2N_ERR_INVALID_KEM_PREFERENCES,
+    S2N_ERR_ASYNC_ALREADY_PERFORMED,
+    S2N_ERR_ASYNC_NOT_PERFORMED,
+    S2N_ERR_ASYNC_WRONG_CONNECTION,
+    S2N_ERR_ASYNC_APPLY_WHILE_INVOKING,
+    S2N_ERR_ASYNC_ALREADY_APPLIED,
     S2N_ERR_T_USAGE_END,
 } s2n_error;
 
@@ -245,14 +274,7 @@ extern __thread const char *s2n_debug_str;
 #define S2N_ERROR_PTR( x )  do { _S2N_ERROR( ( x ) ); return NULL; } while (0)
 #define S2N_ERROR_IF( cond , x ) do { if ( cond ) { S2N_ERROR( x ); }} while (0)
 #define S2N_ERROR_IF_PTR( cond , x ) do { if ( cond ) { S2N_ERROR_PTR( x ); }} while (0)
-
-#ifdef __TIMING_CONTRACTS__
-#    define S2N_PRECONDITION( cond ) (void) 0
-#    define S2N_PRECONDITION_PTR( cond ) (void) 0
-#else
-#    define S2N_PRECONDITION( cond ) S2N_ERROR_IF(!(cond), S2N_ERR_PRECONDITION_VIOLATION)
-#    define S2N_PRECONDITION_PTR( cond ) S2N_ERROR_IF_PTR(!(cond), S2N_ERR_PRECONDITION_VIOLATION)
-#endif /* __TIMING_CONTRACTS__ */
+#define S2N_ERROR_IS_BLOCKING( x )    ( s2n_error_get_type(x) == S2N_ERR_T_BLOCKED )
 
 /**
  * Define function contracts.
@@ -262,17 +284,25 @@ extern __thread const char *s2n_debug_str;
  * Violations of the function contracts are undefined behaviour.
  */
 #ifdef CBMC
-#    define S2N_MEM_IS_READABLE(base, len) __CPROVER_r_ok((base), (len))
-#    define S2N_MEM_IS_WRITABLE(base, len) __CPROVER_w_ok((base), (len))
+#    define S2N_OBJECT_PTR_IS_READABLE(ptr) S2N_MEM_IS_READABLE((ptr), sizeof(*(ptr)))
+#    define S2N_OBJECT_PTR_IS_WRITABLE(ptr) S2N_MEM_IS_WRITABLE((ptr), sizeof(*(ptr)))
+#    define S2N_MEM_IS_READABLE(base, len) (((len) == 0) || __CPROVER_r_ok((base), (len)))
+#    define S2N_MEM_IS_WRITABLE(base, len) (((len) == 0) || __CPROVER_w_ok((base), (len)))
 #else
 /* the C runtime does not give a way to check these properties,
  * but we can at least check that the pointer is valid */
-#    define S2N_MEM_IS_READABLE(base, len) (((len) == 0) || (base))
-#    define S2N_MEM_IS_WRITABLE(base, len) (((len) == 0) || (base))
+#    define S2N_OBJECT_PTR_IS_READABLE(ptr) ((ptr) != NULL)
+#    define S2N_OBJECT_PTR_IS_WRITABLE(ptr) ((ptr) != NULL)
+#    define S2N_MEM_IS_READABLE(base, len) (((len) == 0) || (base) != NULL)
+#    define S2N_MEM_IS_WRITABLE(base, len) (((len) == 0) || (base) != NULL)
 #endif /* CBMC */
 
-#define S2N_OBJECT_PTR_IS_READABLE(ptr) S2N_MEM_IS_READABLE((ptr), sizeof(*(ptr)))
-#define S2N_OBJECT_PTR_IS_WRITABLE(ptr) S2N_MEM_IS_WRITABLE((ptr), sizeof(*(ptr)))
+#define S2N_IMPLIES(a, b) (!(a) || (b))
+/**
+ * If and only if (iff) is a biconditional logical connective between statements a and b.
+ * Equivalent to (S2N_IMPLIES(a, b) && S2N_IMPLIES(b, a)).
+ */
+#define S2N_IFF(a, b) (!!(a) == !!(b))
 
 /** Calculate and print stacktraces */
 struct s2n_stacktrace {
@@ -287,3 +317,5 @@ extern int s2n_calculate_stacktrace(void);
 extern int s2n_print_stacktrace(FILE *fptr);
 extern int s2n_free_stacktrace(void);
 extern int s2n_get_stacktrace(struct s2n_stacktrace *trace);
+
+/* clang-format on */

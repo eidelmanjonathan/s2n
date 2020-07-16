@@ -23,23 +23,22 @@
 int s2n_stuffer_peek_char(struct s2n_stuffer *s2n_stuffer, char *c)
 {
     int r = s2n_stuffer_read_uint8(s2n_stuffer, (uint8_t *) c);
-    if (r == 0) {
+    if (r == S2N_SUCCESS) {
         s2n_stuffer->read_cursor--;
     }
+    POSTCONDITION_POSIX(s2n_stuffer_is_valid(s2n_stuffer));
     return r;
 }
 
 /* Peeks in stuffer to see if expected string is present. */
 int s2n_stuffer_peek_check_for_str(struct s2n_stuffer *s2n_stuffer, const char *expected)
 {
-    int orig_read_pos = s2n_stuffer->read_cursor;
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(s2n_stuffer));
+    uint32_t orig_read_pos = s2n_stuffer->read_cursor;
     int rc = s2n_stuffer_read_expected_str(s2n_stuffer, expected);
     s2n_stuffer->read_cursor = orig_read_pos;
-
-    if (rc == 0) {
-        return 1;
-    }
-    return 0;
+    POSTCONDITION_POSIX(s2n_stuffer_is_valid(s2n_stuffer));
+    return rc;
 }
 
 int s2n_stuffer_skip_whitespace(struct s2n_stuffer *s2n_stuffer)
@@ -64,10 +63,16 @@ int s2n_stuffer_skip_whitespace(struct s2n_stuffer *s2n_stuffer)
 
 int s2n_stuffer_read_expected_str(struct s2n_stuffer *stuffer, const char *expected)
 {
-    void *actual = s2n_stuffer_raw_read(stuffer, strlen(expected));
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    notnull_check(expected);
+    size_t expected_length = strlen(expected);
+    ENSURE_POSIX(s2n_stuffer_data_available(stuffer) >= expected_length, S2N_ERR_STUFFER_OUT_OF_DATA);
+    uint8_t *actual =  stuffer->blob.data + stuffer->read_cursor;
     notnull_check(actual);
-    S2N_ERROR_IF(memcmp(actual, expected, strlen(expected)), S2N_ERR_STUFFER_NOT_FOUND);
-    return 0;
+    ENSURE_POSIX(!memcmp(actual, expected, expected_length), S2N_ERR_STUFFER_NOT_FOUND);
+    stuffer->read_cursor += expected_length;
+    POSTCONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    return S2N_SUCCESS;
 }
 
 /* Read from stuffer until the target string is found, or until there is no more data. */
@@ -95,35 +100,36 @@ int s2n_stuffer_skip_read_until(struct s2n_stuffer *stuffer, const char *target)
 /* Skips the stuffer until the first instance of the target character or until there is no more data. */
 int s2n_stuffer_skip_to_char(struct s2n_stuffer *stuffer, const char target)
 {
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
     while (s2n_stuffer_data_available(stuffer) > 0) {
-        char c;
-        GUARD(s2n_stuffer_peek_char(stuffer, &c));
-        if (c == target) {
+        if (stuffer->blob.data[stuffer->read_cursor] == target) {
             break;
         }
-
-        GUARD(s2n_stuffer_skip_read(stuffer, 1));
+        stuffer->read_cursor += 1;
     }
-
-    return 0;
+    POSTCONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    return S2N_SUCCESS;
 }
 
 /* Skips an expected character in the stuffer between min and max times */
-int s2n_stuffer_skip_expected_char(struct s2n_stuffer *stuffer, const char expected, int min, int max)
+int s2n_stuffer_skip_expected_char(struct s2n_stuffer *stuffer, const char expected, const uint32_t min, const uint32_t max, uint32_t *skipped)
 {
-    int skipped = 0;
-    while (stuffer->read_cursor < stuffer->write_cursor && skipped < max) {
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    PRECONDITION_POSIX(min <= max);
+
+    uint32_t skip = 0;
+    while (stuffer->read_cursor < stuffer->write_cursor && skip < max) {
         if (stuffer->blob.data[stuffer->read_cursor] == expected){
             stuffer->read_cursor += 1;
-            skipped += 1;
+            skip += 1;
         } else {
             break;
         }
     }
-
-    S2N_ERROR_IF(skipped < min, S2N_ERR_STUFFER_NOT_FOUND);
-
-    return skipped;
+    ENSURE_POSIX(skip >= min, S2N_ERR_STUFFER_NOT_FOUND);
+    if(skipped != NULL) *skipped = skip;
+    POSTCONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    return S2N_SUCCESS;
 }
 
 /* Read a line of text. Agnostic to LF or CR+LF line endings. */
@@ -164,8 +170,9 @@ int s2n_stuffer_read_token(struct s2n_stuffer *stuffer, struct s2n_stuffer *toke
 
 int s2n_stuffer_alloc_ro_from_string(struct s2n_stuffer *stuffer, const char *str)
 {
+    PRECONDITION_POSIX(s2n_stuffer_is_valid(stuffer));
+    notnull_check(str);
     uint32_t length = strlen(str);
-
     GUARD(s2n_stuffer_alloc(stuffer, length + 1));
     return s2n_stuffer_write_bytes(stuffer, (const uint8_t *)str, length);
 }
